@@ -114,6 +114,7 @@ private:
     virtual void set_preferred_contrast(u64 page_id, Web::CSS::PreferredContrast) override;
     virtual void set_preferred_motion(u64 page_id, Web::CSS::PreferredMotion) override;
     virtual void set_preferred_languages(u64 page_id, Vector<String>) override;
+    virtual void set_browsing_behavior(u64 page_id, WebView::BrowsingBehavior) override;
     virtual void set_enable_global_privacy_control(u64 page_id, bool) override;
     virtual void set_has_focus(u64 page_id, bool) override;
     virtual void set_is_scripting_enabled(u64 page_id, bool) override;
@@ -167,6 +168,7 @@ private:
     virtual void set_document_cookie_version_buffer(u64 page_id, Core::AnonymousBuffer document_cookie_version_buffer) override;
     virtual void set_document_cookie_version_index(u64 page_id, i64 document_id, Core::SharedVersionIndex document_index) override;
     virtual void cookies_changed(u64 page_id, Vector<HTTP::Cookie::Cookie>) override;
+    virtual void broadcast_channel_message(Web::HTML::BroadcastChannelMessage message) override;
 
     virtual void request_close(u64 page_id) override;
 

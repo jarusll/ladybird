@@ -10,7 +10,7 @@
 #include <AK/Debug.h>
 #include <AK/Function.h>
 #include <LibGC/DeferGC.h>
-#include <LibJS/Bytecode/Interpreter.h>
+#include <LibJS/Bytecode/Debug.h>
 #include <LibJS/Runtime/AbstractOperations.h>
 #include <LibJS/Runtime/Array.h>
 #include <LibJS/Runtime/AsyncFunctionDriverWrapper.h>
@@ -25,6 +25,7 @@
 #include <LibJS/Runtime/NativeFunction.h>
 #include <LibJS/Runtime/PromiseCapability.h>
 #include <LibJS/Runtime/PromiseConstructor.h>
+#include <LibJS/Runtime/VM.h>
 #include <LibJS/Runtime/Value.h>
 #include <LibJS/Runtime/ValueInlines.h>
 #include <LibJS/RustIntegration.h>
@@ -138,10 +139,11 @@ void ECMAScriptFunctionObject::initialize(Realm& realm)
 
 void ECMAScriptFunctionObject::get_stack_frame_info(size_t& registers_and_locals_count, ReadonlySpan<Value>& constants, size_t& argument_count)
 {
-    auto& executable = shared_data().m_executable;
+    auto executable = shared_data().m_executable;
     if (!executable) {
         auto rust_executable = RustIntegration::compile_function(vm(), *m_shared_data, false);
         VERIFY(rust_executable);
+        m_shared_data->set_executable(rust_executable);
         executable = rust_executable;
         executable->name = m_shared_data->m_name;
         if (Bytecode::g_dump_bytecode)
@@ -516,7 +518,7 @@ template void async_function_start(VM&, PromiseCapability const&, GC::Function<C
 // 15.8.4 Runtime Semantics: EvaluateAsyncFunctionBody, https://tc39.es/ecma262/#sec-runtime-semantics-evaluatefunctionbody
 ThrowCompletionOr<Value> ECMAScriptFunctionObject::ordinary_call_evaluate_body(VM& vm, ExecutionContext& context)
 {
-    auto result = TRY(vm.bytecode_interpreter().run_executable(context, *bytecode_executable(), {}));
+    auto result = TRY(vm.run_executable(context, *bytecode_executable(), {}));
 
     // NOTE: Running the bytecode should eventually return a completion.
     // Until it does, we assume "return" and include the undefined fallback from the call site.

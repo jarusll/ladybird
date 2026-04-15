@@ -5,11 +5,12 @@
  */
 
 #include <AK/TypeCasts.h>
-#include <LibJS/Bytecode/Interpreter.h>
+#include <LibJS/Bytecode/Debug.h>
 #include <LibJS/Runtime/AsyncFunctionDriverWrapper.h>
 #include <LibJS/Runtime/AsyncGenerator.h>
 #include <LibJS/Runtime/GeneratorObject.h>
 #include <LibJS/Runtime/NativeJavaScriptBackedFunction.h>
+#include <LibJS/Runtime/VM.h>
 #include <LibJS/RustIntegration.h>
 
 namespace JS {
@@ -72,7 +73,7 @@ ThrowCompletionOr<Value> NativeJavaScriptBackedFunction::call()
 {
     auto& vm = this->vm();
 
-    auto result = TRY(vm.bytecode_interpreter().run_executable(vm.running_execution_context(), bytecode_executable(), {}));
+    auto result = TRY(vm.run_executable(vm.running_execution_context(), bytecode_executable(), {}));
 
     auto kind = this->kind();
     if (kind == FunctionKind::Normal)
@@ -94,10 +95,11 @@ ThrowCompletionOr<Value> NativeJavaScriptBackedFunction::call()
 
 Bytecode::Executable& NativeJavaScriptBackedFunction::bytecode_executable()
 {
-    auto& executable = m_shared_function_instance_data->m_executable;
+    auto executable = m_shared_function_instance_data->m_executable;
     if (!executable) {
         auto rust_executable = RustIntegration::compile_function(vm(), *m_shared_function_instance_data, true);
         VERIFY(rust_executable);
+        m_shared_function_instance_data->set_executable(rust_executable);
         executable = rust_executable;
         executable->name = m_shared_function_instance_data->m_name;
         if (Bytecode::g_dump_bytecode)

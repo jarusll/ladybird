@@ -11,6 +11,7 @@
 #include <LibWeb/CSS/Selector.h>
 #include <LibWeb/CSS/StyleSheetIdentifier.h>
 #include <LibWeb/HTML/ColorPickerUpdateState.h>
+#include <LibWeb/HTML/BroadcastChannelMessage.h>
 #include <LibWeb/HTML/SelectedFile.h>
 #include <LibWeb/HTML/VisibilityState.h>
 #include <LibWeb/Page/InputEvent.h>
@@ -19,6 +20,7 @@
 #include <LibWebView/Attribute.h>
 #include <LibWebView/DOMNodeProperties.h>
 #include <LibWebView/PageInfo.h>
+#include <LibWebView/Settings.h>
 
 endpoint WebContentServer
 {
@@ -102,6 +104,7 @@ endpoint WebContentServer
     set_preferred_contrast(u64 page_id, Web::CSS::PreferredContrast contrast) =|
     set_preferred_motion(u64 page_id, Web::CSS::PreferredMotion motion) =|
     set_preferred_languages(u64 page_id, Vector<String> preferred_languages) =|
+    set_browsing_behavior(u64 page_id, WebView::BrowsingBehavior browsing_behavior) =|
     set_enable_global_privacy_control(u64 page_id, bool enable) =|
     set_has_focus(u64 page_id, bool has_focus) =|
     set_is_scripting_enabled(u64 page_id, bool is_scripting_enabled) =|
@@ -141,6 +144,7 @@ endpoint WebContentServer
     set_document_cookie_version_buffer(u64 page_id, Core::AnonymousBuffer document_cookie_version_buffer) =|
     set_document_cookie_version_index(u64 page_id, i64 document_id, Core::SharedVersionIndex document_index) =|
     cookies_changed(u64 page_id, Vector<HTTP::Cookie::Cookie> cookies) =|
+    broadcast_channel_message(Web::HTML::BroadcastChannelMessage message) =|
 
     request_close(u64 page_id) =|
 

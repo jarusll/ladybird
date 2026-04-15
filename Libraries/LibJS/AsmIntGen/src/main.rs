@@ -19,7 +19,7 @@
 //! 3. Opcodes without an assembly handler are caught by a **fallback handler**
 //!    that calls into C++ (`asm_fallback_handler`).
 //!
-//! The entry point is `asm_interpreter_entry(bytecode, entry_point, values, interp)`.
+//! The entry point is `asm_interpreter_entry(bytecode, entry_point, values, vm)`.
 //! It saves callee-saved registers, sets up pinned registers, and dispatches.
 //!
 //! ## Pinned registers
@@ -61,7 +61,7 @@
 //!
 //! ### C++ interop
 //!
-//! - `call_slow_path func` -- **TERMINAL.** Calls `i64 func(Interpreter*, u32 pc)`.
+//! - `call_slow_path func` -- **TERMINAL.** Calls `i64 func(VM*, u32 pc)`.
 //!   If return >= 0, reloads pinned state (exec_ctx, pb, values -- they may
 //!   have changed due to exception unwinding), sets pc to the return value,
 //!   and dispatches. If return < 0, exits. Control does NOT return to the
@@ -69,10 +69,12 @@
 //! - `call_helper func` -- **Non-terminal.** Calls `u64 func(u64 value)`.
 //!   Passes `t1` as the argument. Result lands in `t0`. The handler continues
 //!   after the call. Does NOT reload pinned state.
-//! - `call_interp func` -- **Non-terminal.** Calls `i64 func(Interpreter*, u32 pc)`.
+//! - `call_interp func` -- **Non-terminal.** Calls `i64 func(VM*, u32 pc)`.
 //!   Result lands in `t0`. The handler continues. Does NOT reload pinned state.
-//! - `reload_exec_ctx` -- Reload the exec_ctx register from the Interpreter*.
+//! - `reload_exec_ctx` -- Reload the exec_ctx register from the VM*.
 //!   Used after non-terminal calls that may modify the running execution context.
+//! - `load_vm dst` -- Load the hidden VM* into `dst`.
+//!   Used when a handler needs to update VM-owned bookkeeping directly.
 //!
 //! ### Bytecode operand access
 //!
@@ -92,14 +94,29 @@
 //!
 //! - `load64 dst, [base, offset]` -- Load 64-bit value.
 //! - `load32 dst, [base, offset]` -- Load 32-bit value, zero-extended to 64.
+//! - `load_pair64 dst1, dst2, mem1, mem2` -- Load two adjacent 64-bit values.
+//!   The DSL must name both memory operands explicitly; AsmIntGen verifies that
+//!   `mem2` is immediately after `mem1`, then lowers to a paired load where the
+//!   target supports it.
+//! - `load_pair32 dst1, dst2, mem1, mem2` -- Load two adjacent 32-bit values.
+//!   Like `load_pair64`, both operands must be named and adjacent or codegen
+//!   rejects the handler.
 //! - `load16 dst, [base, offset]` -- Load 16-bit value, zero-extended to 64.
 //! - `load8 dst, [base, offset]` -- Load 8-bit value, zero-extended to 64.
 //! - `load16s dst, [base, offset]` -- Load 16-bit value, sign-extended.
 //! - `load8s dst, [base, offset]` -- Load 8-bit value, sign-extended.
 //! - `store64 [base, offset], src` -- Store 64 bits.
 //! - `store32 [base, offset], src` -- Store low 32 bits.
+//! - `store_pair64 mem1, mem2, src1, src2` -- Store two adjacent 64-bit
+//!   values. Like `load_pair64`, the DSL must name both destinations
+//!   explicitly and AsmIntGen verifies that `mem2` is immediately after
+//!   `mem1`.
+//! - `store_pair32 mem1, mem2, src1, src2` -- Store two adjacent 32-bit
+//!   values. Like `store_pair64`, both memory operands must be named and
+//!   adjacent or codegen rejects the handler.
 //! - `store16 [base, offset], src` -- Store low 16 bits.
 //! - `store8 [base, offset], src` -- Store low 8 bits.
+//! - `inc32_mem [base, offset]` -- Increment a 32-bit memory slot by 1.
 //!
 //! ### Integer ALU
 //!

@@ -130,6 +130,9 @@ public:
     bool should_block_pop_ups() const { return m_should_block_pop_ups; }
     void set_should_block_pop_ups(bool b) { m_should_block_pop_ups = b; }
 
+    bool enable_autoscroll() const { return m_enable_autoscroll; }
+    void set_enable_autoscroll(bool b) { m_enable_autoscroll = b; }
+
     bool is_webdriver_active() const { return m_is_webdriver_active; }
     void set_is_webdriver_active(bool b) { m_is_webdriver_active = b; }
 
@@ -286,8 +289,8 @@ private:
     GC::Ptr<HTML::TraversableNavigable> m_top_level_traversable;
 
     bool m_is_scripting_enabled { true };
-
     bool m_should_block_pop_ups { true };
+    bool m_enable_autoscroll { true };
 
     // https://w3c.github.io/webdriver/#dfn-webdriver-active-flag
     // The webdriver-active flag is set to true when the user agent is under remote control. It is initially false.
@@ -470,6 +473,7 @@ public:
     virtual void page_did_receive_network_response_body([[maybe_unused]] u64 request_id, [[maybe_unused]] ReadonlyBytes data) { }
     virtual void page_did_finish_network_request([[maybe_unused]] u64 request_id, [[maybe_unused]] u64 body_size, [[maybe_unused]] Requests::RequestTimingInfo const& timing_info, [[maybe_unused]] Optional<Requests::NetworkError> const& network_error) { }
     virtual void page_did_report_worker_exception([[maybe_unused]] String const& message, [[maybe_unused]] String const& filename, [[maybe_unused]] u32 lineno, [[maybe_unused]] u32 colno) { }
+    virtual void page_did_post_broadcast_channel_message([[maybe_unused]] HTML::BroadcastChannelMessage const& message) { }
 
     struct WorkerAgentResponse {
         IPC::TransportHandle worker_handle;

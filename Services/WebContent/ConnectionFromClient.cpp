@@ -37,6 +37,7 @@
 #include <LibWeb/DOM/Text.h>
 #include <LibWeb/Dump.h>
 #include <LibWeb/Fetch/Fetching/Fetching.h>
+#include <LibWeb/HTML/BroadcastChannel.h>
 #include <LibWeb/HTML/BrowsingContext.h>
 #include <LibWeb/HTML/HTMLInputElement.h>
 #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
@@ -55,6 +56,7 @@
 #include <LibWeb/Painting/ViewportPaintable.h>
 #include <LibWeb/PermissionsPolicy/AutoplayAllowlist.h>
 #include <LibWeb/Platform/EventLoopPlugin.h>
+#include <LibWeb/Worker/WebWorkerClient.h>
 #include <LibWebView/Attribute.h>
 #include <LibWebView/ViewImplementation.h>
 #include <WebContent/ConnectionFromClient.h>
@@ -1181,6 +1183,12 @@ void ConnectionFromClient::set_preferred_languages(u64, Vector<String> preferred
     Web::ResourceLoader::the().set_preferred_languages(move(preferred_languages));
 }
 
+void ConnectionFromClient::set_browsing_behavior(u64 page_id, WebView::BrowsingBehavior browsing_behavior)
+{
+    if (auto page = this->page(page_id); page.has_value())
+        page->page().set_enable_autoscroll(browsing_behavior.enable_autoscroll);
+}
+
 void ConnectionFromClient::set_enable_global_privacy_control(u64, bool enable)
 {
     Web::ResourceLoader::the().set_enable_global_privacy_control(enable);
@@ -1386,6 +1394,17 @@ void ConnectionFromClient::cookies_changed(u64 page_id, Vector<HTTP::Cookie::Coo
 
         window->cookie_store()->process_cookie_changes(move(cookies));
     }
+}
+
+void ConnectionFromClient::broadcast_channel_message(Web::HTML::BroadcastChannelMessage message)
+{
+    Web::HTML::BroadcastChannel::deliver_message_locally(message);
+    Web::HTML::WebWorkerClient::for_each_client([&](auto& client) {
+        if (client.pid() == message.source_process_id)
+            return IterationDecision::Continue;
+        client.async_broadcast_channel_message(message);
+        return IterationDecision::Continue;
+    });
 }
 
 // https://html.spec.whatwg.org/multipage/speculative-loading.html#nav-traversal-ui:close-a-top-level-traversable

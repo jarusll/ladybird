@@ -8,12 +8,12 @@
 
 #pragma once
 
-#include <LibJS/Bytecode/Interpreter.h>
 #include <LibJS/Export.h>
 #include <LibJS/Runtime/ClassFieldDefinition.h>
 #include <LibJS/Runtime/ExecutionContext.h>
 #include <LibJS/Runtime/FunctionObject.h>
 #include <LibJS/Runtime/SharedFunctionInstanceData.h>
+#include <LibJS/Runtime/VM.h>
 
 namespace JS {
 
@@ -62,9 +62,15 @@ public:
     Utf16FlyString const& name() const { return shared_data().m_name; }
     void set_name(Utf16FlyString const& name);
 
-    void set_is_class_constructor() { const_cast<SharedFunctionInstanceData&>(shared_data()).m_is_class_constructor = true; }
+    void set_is_class_constructor() { const_cast<SharedFunctionInstanceData&>(shared_data()).set_is_class_constructor(); }
 
     auto& bytecode_executable() const { return shared_data().m_executable; }
+    [[nodiscard]] bool can_inline_call() const { return shared_data().can_inline_call(); }
+    [[nodiscard]] Bytecode::Executable& inline_call_executable() const
+    {
+        VERIFY(can_inline_call());
+        return *shared_data().m_executable;
+    }
 
     Environment* environment() { return m_environment; }
     virtual Realm* realm() const override { return &shape().realm(); }
@@ -111,7 +117,7 @@ public:
     bool allocates_function_environment() const { return shared_data().m_function_environment_needed; }
 
     friend class Bytecode::Generator;
-    friend class Bytecode::Interpreter;
+    friend class VM;
 
 private:
     ECMAScriptFunctionObject(

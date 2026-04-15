@@ -12,19 +12,22 @@
 #include <AK/Utf16StringData.h>
 #include <LibJS/Bytecode/Builtins.h>
 #include <LibJS/Bytecode/Executable.h>
-#include <LibJS/Bytecode/Interpreter.h>
 #include <LibJS/Bytecode/PropertyNameIterator.h>
 #include <LibJS/Bytecode/PutKind.h>
 #include <LibJS/Runtime/ArrayBuffer.h>
 #include <LibJS/Runtime/DeclarativeEnvironment.h>
+#include <LibJS/Runtime/ECMAScriptFunctionObject.h>
 #include <LibJS/Runtime/ExecutionContext.h>
 #include <LibJS/Runtime/FunctionObject.h>
+#include <LibJS/Runtime/GlobalEnvironment.h>
 #include <LibJS/Runtime/IndexedProperties.h>
 #include <LibJS/Runtime/Object.h>
 #include <LibJS/Runtime/PrimitiveString.h>
 #include <LibJS/Runtime/Realm.h>
 #include <LibJS/Runtime/Shape.h>
+#include <LibJS/Runtime/SharedFunctionInstanceData.h>
 #include <LibJS/Runtime/TypedArray.h>
+#include <LibJS/Runtime/VM.h>
 
 #define EMIT_OFFSET(name, type, member) \
     outln("const " #name " = {}", offsetof(type, member))
@@ -61,9 +64,11 @@ int main()
     outln("const OBJECT_FLAG_MAY_INTERFERE = {}", Object::Flag::MayInterfereWithIndexedPropertyAccess);
     outln("const OBJECT_FLAG_IS_TYPED_ARRAY = {}", Object::Flag::IsTypedArray);
     outln("const OBJECT_FLAG_IS_FUNCTION = {}", Object::Flag::IsFunction);
+    outln("const OBJECT_FLAG_IS_ECMASCRIPT_FUNCTION_OBJECT = {}", Object::Flag::IsECMAScriptFunctionObject);
 
     // Shape layout
     outln("\n# Shape layout");
+    EMIT_OFFSET(SHAPE_REALM, Shape, m_realm);
     EMIT_OFFSET(SHAPE_PROTOTYPE, Shape, m_prototype);
     EMIT_OFFSET(SHAPE_DICTIONARY_GENERATION, Shape, m_dictionary_generation);
     EMIT_SIZEOF(SHAPE_SIZE, Shape);
@@ -123,25 +128,57 @@ int main()
 
     // Executable layout
     outln("\n# Executable layout");
+    EMIT_OFFSET(EXECUTABLE_CONSTANTS, Executable, constants);
     EMIT_OFFSET(EXECUTABLE_PROPERTY_LOOKUP_CACHES, Executable, property_lookup_caches);
+    EMIT_OFFSET(EXECUTABLE_REGISTERS_AND_LOCALS_COUNT, Executable, registers_and_locals_count);
+    EMIT_OFFSET(EXECUTABLE_REGISTERS_AND_LOCALS_AND_CONSTANTS_COUNT, Executable, registers_and_locals_and_constants_count);
+    EMIT_OFFSET(EXECUTABLE_ASM_CONSTANTS_SIZE, Executable, asm_constants_size);
+    EMIT_OFFSET(EXECUTABLE_ASM_CONSTANTS_DATA, Executable, asm_constants_data);
 
     // ExecutionContext layout
     outln("\n# ExecutionContext layout");
+    VERIFY(alignof(ExecutionContext) == sizeof(Value));
     EMIT_OFFSET(EXECUTION_CONTEXT_EXECUTABLE, ExecutionContext, executable);
+    EMIT_OFFSET(EXECUTION_CONTEXT_FUNCTION, ExecutionContext, function);
     EMIT_OFFSET(EXECUTION_CONTEXT_REALM, ExecutionContext, realm);
+    EMIT_OFFSET(EXECUTION_CONTEXT_SCRIPT_OR_MODULE, ExecutionContext, script_or_module);
     EMIT_OFFSET(EXECUTION_CONTEXT_LEXICAL_ENVIRONMENT, ExecutionContext, lexical_environment);
+    EMIT_OFFSET(EXECUTION_CONTEXT_VARIABLE_ENVIRONMENT, ExecutionContext, variable_environment);
+    EMIT_OFFSET(EXECUTION_CONTEXT_PRIVATE_ENVIRONMENT, ExecutionContext, private_environment);
+    EMIT_OFFSET(EXECUTION_CONTEXT_SKIP_WHEN_DETERMINING_INCUMBENT_COUNTER, ExecutionContext, skip_when_determining_incumbent_counter);
+    EMIT_OFFSET(EXECUTION_CONTEXT_YIELD_CONTINUATION, ExecutionContext, yield_continuation);
+    EMIT_OFFSET(EXECUTION_CONTEXT_YIELD_IS_AWAIT, ExecutionContext, yield_is_await);
+    EMIT_OFFSET(EXECUTION_CONTEXT_CALLER_IS_CONSTRUCT, ExecutionContext, caller_is_construct);
+    EMIT_OFFSET(EXECUTION_CONTEXT_THIS_VALUE, ExecutionContext, this_value);
     EMIT_OFFSET(EXECUTION_CONTEXT_CALLER_FRAME, ExecutionContext, caller_frame);
+    EMIT_OFFSET(EXECUTION_CONTEXT_PASSED_ARGUMENT_COUNT, ExecutionContext, passed_argument_count);
+    EMIT_OFFSET(EXECUTION_CONTEXT_CALLER_RETURN_PC, ExecutionContext, caller_return_pc);
+    EMIT_OFFSET(EXECUTION_CONTEXT_CALLER_DST_RAW, ExecutionContext, caller_dst_raw);
     EMIT_OFFSET(EXECUTION_CONTEXT_PROGRAM_COUNTER, ExecutionContext, program_counter);
+    EMIT_OFFSET(EXECUTION_CONTEXT_REGISTERS_AND_CONSTANTS_AND_LOCALS_AND_ARGUMENTS_COUNT, ExecutionContext, registers_and_constants_and_locals_and_arguments_count);
+    EMIT_OFFSET(EXECUTION_CONTEXT_ARGUMENT_COUNT, ExecutionContext, argument_count);
     EMIT_SIZEOF(SIZEOF_EXECUTION_CONTEXT, ExecutionContext);
+    outln("const ALIGNOF_EXECUTION_CONTEXT = {}", alignof(ExecutionContext));
+    outln("const EXECUTION_CONTEXT_NO_YIELD_CONTINUATION = {}", ExecutionContext::no_yield_continuation);
+    outln("const SIZEOF_SCRIPT_OR_MODULE = {}", sizeof(ScriptOrModule));
+
+    // InterpreterStack layout
+    outln("\n# InterpreterStack layout");
+    EMIT_OFFSET(INTERPRETER_STACK_LIMIT, InterpreterStack, m_limit);
+    EMIT_OFFSET(INTERPRETER_STACK_TOP, InterpreterStack, m_top);
 
     // Realm layout
     outln("\n# Realm layout");
+    EMIT_OFFSET(REALM_GLOBAL_ENVIRONMENT, Realm, m_global_environment);
     EMIT_OFFSET(REALM_GLOBAL_OBJECT, Realm, m_global_object);
     EMIT_OFFSET(REALM_GLOBAL_DECLARATIVE_ENVIRONMENT, Realm, m_global_declarative_environment);
 
-    // Interpreter layout
-    outln("\n# Interpreter layout");
-    EMIT_OFFSET(INTERPRETER_RUNNING_EXECUTION_CONTEXT, Interpreter, m_running_execution_context);
+    // VM layout
+    outln("\n# VM layout");
+    EMIT_OFFSET(VM_RUNNING_EXECUTION_CONTEXT, VM, m_running_execution_context);
+    EMIT_OFFSET(VM_INTERPRETER_STACK, VM, m_interpreter_stack);
+    EMIT_OFFSET(VM_EXECUTION_GENERATION, VM, m_execution_generation);
+    outln("const VM_INTERPRETER_STACK_TOP = {}", offsetof(VM, m_interpreter_stack) + offsetof(InterpreterStack, m_top));
 
     // IndexedStorageKind enum values
     outln("\n# IndexedStorageKind enum values");
@@ -168,6 +205,8 @@ int main()
 
         // Composite offset for Executable.bytecode data pointer
         outln("const EXECUTABLE_BYTECODE_DATA = {}", offsetof(Executable, bytecode) + vec_data);
+        outln("const EXECUTABLE_CONSTANTS_DATA = {}", offsetof(Executable, constants) + vec_data);
+        outln("const EXECUTABLE_CONSTANTS_SIZE = {}", offsetof(Executable, constants) + vec_size);
         outln("const OBJECT_PROPERTY_ITERATOR_CACHE_DATA_PROPERTY_VALUES_DATA = {}", offsetof(ObjectPropertyIteratorCacheData, m_property_values) + vec_data);
         outln("const OBJECT_PROPERTY_ITERATOR_CACHE_DATA_PROPERTY_VALUES_SIZE = {}", offsetof(ObjectPropertyIteratorCacheData, m_property_values) + vec_size);
     }
@@ -219,6 +258,31 @@ int main()
         outln("const FUNCTION_OBJECT_BUILTIN_VALUE = {}", base);
         outln("const FUNCTION_OBJECT_BUILTIN_HAS_VALUE = {}", base + 1);
     }
+
+    // ECMAScriptFunctionObject layout
+    outln("\n# ECMAScriptFunctionObject layout");
+    EMIT_OFFSET(ECMASCRIPT_FUNCTION_OBJECT_SHARED_DATA, ECMAScriptFunctionObject, m_shared_data);
+    EMIT_OFFSET(ECMASCRIPT_FUNCTION_OBJECT_ENVIRONMENT, ECMAScriptFunctionObject, m_environment);
+    EMIT_OFFSET(ECMASCRIPT_FUNCTION_OBJECT_PRIVATE_ENVIRONMENT, ECMAScriptFunctionObject, m_private_environment);
+    EMIT_OFFSET(ECMASCRIPT_FUNCTION_OBJECT_SCRIPT_OR_MODULE, ECMAScriptFunctionObject, m_script_or_module);
+
+    // SharedFunctionInstanceData layout
+    outln("\n# SharedFunctionInstanceData layout");
+    EMIT_OFFSET(SHARED_FUNCTION_INSTANCE_DATA_EXECUTABLE, SharedFunctionInstanceData, m_executable);
+    EMIT_OFFSET(SHARED_FUNCTION_INSTANCE_DATA_ASM_CALL_METADATA, SharedFunctionInstanceData, m_asm_call_metadata);
+    EMIT_OFFSET(SHARED_FUNCTION_INSTANCE_DATA_FORMAL_PARAMETER_COUNT, SharedFunctionInstanceData, m_formal_parameter_count);
+    EMIT_OFFSET(SHARED_FUNCTION_INSTANCE_DATA_STRICT, SharedFunctionInstanceData, m_strict);
+    EMIT_OFFSET(SHARED_FUNCTION_INSTANCE_DATA_FUNCTION_ENVIRONMENT_NEEDED, SharedFunctionInstanceData, m_function_environment_needed);
+    EMIT_OFFSET(SHARED_FUNCTION_INSTANCE_DATA_USES_THIS, SharedFunctionInstanceData, m_uses_this);
+    EMIT_OFFSET(SHARED_FUNCTION_INSTANCE_DATA_CAN_INLINE_CALL, SharedFunctionInstanceData, m_can_inline_call);
+    outln("const SHARED_FUNCTION_INSTANCE_DATA_ASM_CALL_METADATA_CAN_INLINE_CALL = {}", SharedFunctionInstanceData::asm_call_metadata_can_inline_call);
+    outln("const SHARED_FUNCTION_INSTANCE_DATA_ASM_CALL_METADATA_FUNCTION_ENVIRONMENT_NEEDED = {}", SharedFunctionInstanceData::asm_call_metadata_function_environment_needed);
+    outln("const SHARED_FUNCTION_INSTANCE_DATA_ASM_CALL_METADATA_USES_THIS = {}", SharedFunctionInstanceData::asm_call_metadata_uses_this);
+    outln("const SHARED_FUNCTION_INSTANCE_DATA_ASM_CALL_METADATA_STRICT = {}", SharedFunctionInstanceData::asm_call_metadata_strict);
+
+    // GlobalEnvironment layout
+    outln("\n# GlobalEnvironment layout");
+    EMIT_OFFSET(GLOBAL_ENVIRONMENT_GLOBAL_THIS_VALUE, GlobalEnvironment, m_global_this_value);
 
     // PrimitiveString layout
     outln("\n# PrimitiveString layout");
@@ -310,6 +374,7 @@ int main()
 
     // Shifted value constants
     outln("\n# Shifted value constants");
+    outln("const OBJECT_TAG_SHIFTED = 0x{:X}", static_cast<u64>(OBJECT_TAG << GC::TAG_SHIFT));
     outln("const EMPTY_VALUE = 0x{:X}", static_cast<u64>(EMPTY_TAG << GC::TAG_SHIFT));
     outln("const INT32_TAG_SHIFTED = 0x{:X}", static_cast<u64>(INT32_TAG << GC::TAG_SHIFT));
     outln("const BOOLEAN_TRUE = 0x{:X}", static_cast<u64>((BOOLEAN_TAG << GC::TAG_SHIFT) | 1));
@@ -322,7 +387,12 @@ int main()
     outln("const NEGATIVE_ZERO = 0x{:X}", static_cast<u64>(NEGATIVE_ZERO_BITS));
     outln("const CELL_TAG_SHIFTED = 0x{:X}", static_cast<u64>(GC::SHIFTED_IS_CELL_PATTERN));
 
+    outln("const ACCUMULATOR_REG_OFFSET = {}", static_cast<size_t>(Register::accumulator().index()) * sizeof(Value));
+    outln("const EXCEPTION_REG_OFFSET = {}", static_cast<size_t>(Register::exception().index()) * sizeof(Value));
     outln("const THIS_VALUE_REG_OFFSET = {}", static_cast<size_t>(Register::this_value().index()) * sizeof(Value));
+    outln("const RETURN_VALUE_REG_OFFSET = {}", static_cast<size_t>(Register::return_value().index()) * sizeof(Value));
+    outln("const SAVED_LEXICAL_ENVIRONMENT_REG_OFFSET = {}", static_cast<size_t>(Register::saved_lexical_environment().index()) * sizeof(Value));
+    outln("const RESERVED_REGISTERS_SIZE = {}", static_cast<size_t>(Register::reserved_register_count) * sizeof(Value));
 
     return 0;
 }

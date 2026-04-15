@@ -12,7 +12,7 @@
 #   dispatch = dispatch table base pointer (256 entries, 8 bytes each)
 #
 # Temporary registers (caller-saved, clobbered by C++ calls):
-#   t0-t9    = general-purpose scratch
+#   t0-t8    = general-purpose scratch
 #   ft0-ft3  = floating-point scratch (scalar double)
 #
 # NaN-boxing encoding:
@@ -431,10 +431,9 @@ end
 macro walk_env_chain(m_cache_field, fail_label)
     lea t0, [pb, pc]
     add t0, m_cache_field
-    load32 t1, [t0, ENVIRONMENT_COORDINATE_HOPS]
+    load_pair32 t1, t2, [t0, ENVIRONMENT_COORDINATE_HOPS], [t0, ENVIRONMENT_COORDINATE_INDEX]
     mov t4, ENVIRONMENT_COORDINATE_INVALID
     branch_eq t1, t4, fail_label
-    load32 t2, [t0, ENVIRONMENT_COORDINATE_INDEX]
     load64 t3, [exec_ctx, EXECUTION_CONTEXT_LEXICAL_ENVIRONMENT]
     branch_zero t1, .walk_done
 .walk_loop:
@@ -448,14 +447,42 @@ macro walk_env_chain(m_cache_field, fail_label)
     branch_nonzero t0, fail_label
 end
 
-# Reload pb and values from the current running execution context.
-# Used after inline call/return to switch to the new frame's bytecode.
-# Clobbers t0, t1.
-macro reload_state_from_exec_ctx()
-    reload_exec_ctx
-    load64 t1, [exec_ctx, EXECUTION_CONTEXT_EXECUTABLE]
-    load64 pb, [t1, EXECUTABLE_BYTECODE_DATA]
+# Pop an inline frame and resume the caller without bouncing through C++.
+# The asm-managed JS-to-JS call fast path currently only inlines Call, never
+# CallConstruct, so caller_is_construct is always false for asm-managed inline
+# frames.
+#
+# This mirrors VM::pop_inline_frame():
+#   1. Read the caller's destination register from the callee frame.
+#   2. Publish the caller's resume pc and returned value.
+#   3. Deallocate the callee by rewinding InterpreterStack::top to exec_ctx.
+#   4. Make the caller the running execution context again.
+#   5. Advance execution_generation so WeakRef and similar observers still see
+#      the same boundary they would have seen through the C++ helper.
+#
+# The macro expects exec_ctx/pb/values/pc to still describe the callee frame.
+# Input:
+#   caller_frame = ExecutionContext* of the caller
+#   value_reg = NaN-boxed return value
+# Clobbers:
+#   t2, t3, t4
+macro pop_inline_frame_and_resume(caller_frame, value_reg)
+    load_pair32 t2, t4, [exec_ctx, EXECUTION_CONTEXT_CALLER_RETURN_PC], [exec_ctx, EXECUTION_CONTEXT_CALLER_DST_RAW]
+    store32 [caller_frame, EXECUTION_CONTEXT_PROGRAM_COUNTER], t2
+    lea t3, [caller_frame, SIZEOF_EXECUTION_CONTEXT]
+    store64 [t3, t4, 8], value_reg
+
+    load_vm t3
+    store64 [t3, VM_RUNNING_EXECUTION_CONTEXT], caller_frame
+    store64 [t3, VM_INTERPRETER_STACK_TOP], exec_ctx
+    inc32_mem [t3, VM_EXECUTION_GENERATION]
+
+    mov exec_ctx, caller_frame
+    load64 t3, [exec_ctx, EXECUTION_CONTEXT_EXECUTABLE]
+    load64 pb, [t3, EXECUTABLE_BYTECODE_DATA]
     lea values, [exec_ctx, SIZEOF_EXECUTION_CONTEXT]
+    mov pc, t2
+    dispatch_current
 end
 
 # ============================================================================
@@ -838,48 +865,44 @@ end
 # ============================================================================
 
 handler Return
-    # Check if this is an inline frame (caller_frame != nullptr)
+    # Empty is the internal "no explicit value" marker. Returning it from
+    # bytecode means "return undefined" at the JS level.
+    load_operand t0, m_value
+    mov t2, EMPTY_TAG_SHIFTED
+    branch_ne t0, t2, .value_ready
+    mov t0, UNDEFINED_SHIFTED
+.value_ready:
+    # Inline JS-to-JS calls resume the caller directly from asm. Top-level
+    # returns instead exit back to the outer interpreter entry point.
     load64 t1, [exec_ctx, EXECUTION_CONTEXT_CALLER_FRAME]
     branch_zero t1, .top_level
-    # Inline return: pop the frame via C++ helper, then reload state
-    call_interp asm_pop_inline_frame
-    reload_state_from_exec_ctx
-    # Load the restored caller's program_counter
-    load32 pc, [exec_ctx, EXECUTION_CONTEXT_PROGRAM_COUNTER]
-    dispatch_current
+    pop_inline_frame_and_resume t1, t0
 .top_level:
-    # Top-level return: load value, empty->undefined, store to return_value
-    load_operand t0, m_value
-    mov t1, EMPTY_TAG_SHIFTED
-    branch_ne t0, t1, .store_return
-    mov t0, UNDEFINED_SHIFTED
-.store_return:
+    # Top-level return matches VM::run_executable(): write return_value,
+    # clear the exception slot, and leave the asm interpreter entirely.
     # values[3] = return_value, values[1] = empty (clear exception)
     store64 [values, 24], t0
-    mov t1, EMPTY_TAG_SHIFTED
-    store64 [values, 8], t1
+    store64 [values, 8], t2
     exit
 end
 
 # Like Return, but does not clear the exception register (values[1]).
 # Used at the end of a function body (after all user code).
 handler End
-    # Check if this is an inline frame (caller_frame != nullptr)
+    # End shares the same inline-frame unwind logic as Return. The only
+    # top-level difference is that End preserves the current exception slot.
+    load_operand t0, m_value
+    mov t2, EMPTY_TAG_SHIFTED
+    branch_ne t0, t2, .value_ready
+    mov t0, UNDEFINED_SHIFTED
+.value_ready:
+    # Inline frame: resume the caller immediately.
     load64 t1, [exec_ctx, EXECUTION_CONTEXT_CALLER_FRAME]
     branch_zero t1, .top_level
-    # Inline return: pop the frame via C++ helper, then reload state
-    call_interp asm_pop_inline_frame_end
-    reload_state_from_exec_ctx
-    # Load the restored caller's program_counter
-    load32 pc, [exec_ctx, EXECUTION_CONTEXT_PROGRAM_COUNTER]
-    dispatch_current
+    pop_inline_frame_and_resume t1, t0
 .top_level:
-    # Top-level end: load value, empty->undefined, store to return_value
-    load_operand t0, m_value
-    mov t1, EMPTY_TAG_SHIFTED
-    branch_ne t0, t1, .store_end
-    mov t0, UNDEFINED_SHIFTED
-.store_end:
+    # Top-level end: publish the return value and exit without touching
+    # values[1], since End does not model a user-visible `return` opcode.
     store64 [values, 24], t0
     exit
 end
@@ -1557,20 +1580,17 @@ handler GetById
     load64 t4, [t3, OBJECT_SHAPE]
     # Get PropertyLookupCache* (direct pointer from instruction stream)
     load64 t5, [pb, pc, m_cache]
-    # Check entry[0].shape matches Object's shape (direct pointer compare)
-    load64 t0, [t5, PROPERTY_LOOKUP_CACHE_ENTRY0_SHAPE]
-    branch_ne t0, t4, .try_cache
-    # Check entry[0].prototype (null = own property, non-null = prototype chain)
-    load64 t0, [t5, PROPERTY_LOOKUP_CACHE_ENTRY0_PROTOTYPE]
+    # Check entry[0].shape and entry[0].prototype.
+    load_pair64 t1, t0, [t5, PROPERTY_LOOKUP_CACHE_ENTRY0_SHAPE], [t5, PROPERTY_LOOKUP_CACHE_ENTRY0_PROTOTYPE]
+    branch_ne t1, t4, .try_cache
     branch_nonzero t0, .proto
     # Check dictionary generation matches
-    load32 t0, [t5, PROPERTY_LOOKUP_CACHE_ENTRY0_DICTIONARY_GENERATION]
+    load_pair32 t1, t0, [t5, PROPERTY_LOOKUP_CACHE_ENTRY0_PROPERTY_OFFSET], [t5, PROPERTY_LOOKUP_CACHE_ENTRY0_DICTIONARY_GENERATION]
     load32 t2, [t4, SHAPE_DICTIONARY_GENERATION]
     branch_ne t0, t2, .try_cache
     # IC hit! Load property value via get_direct (own property)
-    load32 t0, [t5, PROPERTY_LOOKUP_CACHE_ENTRY0_PROPERTY_OFFSET]
     load64 t5, [t3, OBJECT_NAMED_PROPERTIES]
-    load64 t0, [t5, t0, 8]
+    load64 t0, [t5, t1, 8]
     # Check value is not an accessor
     extract_tag t2, t0
     branch_eq t2, ACCESSOR_TAG, .try_cache
@@ -1584,16 +1604,15 @@ handler GetById
     load8 t2, [t1, PROTOTYPE_CHAIN_VALIDITY_VALID]
     branch_zero t2, .try_cache
     # Check dictionary generation matches
-    load32 t1, [t5, PROPERTY_LOOKUP_CACHE_ENTRY0_DICTIONARY_GENERATION]
-    load32 t2, [t4, SHAPE_DICTIONARY_GENERATION]
-    branch_ne t1, t2, .try_cache
+    load_pair32 t2, t1, [t5, PROPERTY_LOOKUP_CACHE_ENTRY0_PROPERTY_OFFSET], [t5, PROPERTY_LOOKUP_CACHE_ENTRY0_DICTIONARY_GENERATION]
+    load32 t4, [t4, SHAPE_DICTIONARY_GENERATION]
+    branch_ne t1, t4, .try_cache
     # IC hit! Load property value via get_direct (from prototype)
-    load32 t1, [t5, PROPERTY_LOOKUP_CACHE_ENTRY0_PROPERTY_OFFSET]
-    load64 t2, [t0, OBJECT_NAMED_PROPERTIES]
-    load64 t0, [t2, t1, 8]
+    load64 t1, [t0, OBJECT_NAMED_PROPERTIES]
+    load64 t0, [t1, t2, 8]
     # Check value is not an accessor
-    extract_tag t2, t0
-    branch_eq t2, ACCESSOR_TAG, .try_cache
+    extract_tag t1, t0
+    branch_eq t1, ACCESSOR_TAG, .try_cache
     store_operand m_dst, t0
     dispatch_next
 .try_cache:
@@ -1618,25 +1637,22 @@ handler PutById
     load64 t4, [t3, OBJECT_SHAPE]
     # Get PropertyLookupCache* (direct pointer from instruction stream)
     load64 t5, [pb, pc, m_cache]
-    # Check entry[0].shape matches Object's shape (direct pointer compare)
-    load64 t0, [t5, PROPERTY_LOOKUP_CACHE_ENTRY0_SHAPE]
-    branch_ne t0, t4, .try_cache
-    # Check entry[0].prototype is null (own-property store only)
-    load64 t0, [t5, PROPERTY_LOOKUP_CACHE_ENTRY0_PROTOTYPE]
+    # Check entry[0].shape and entry[0].prototype.
+    load_pair64 t1, t0, [t5, PROPERTY_LOOKUP_CACHE_ENTRY0_SHAPE], [t5, PROPERTY_LOOKUP_CACHE_ENTRY0_PROTOTYPE]
+    branch_ne t1, t4, .try_cache
     branch_nonzero t0, .try_cache
     # Check dictionary generation matches
-    load32 t0, [t5, PROPERTY_LOOKUP_CACHE_ENTRY0_DICTIONARY_GENERATION]
+    load_pair32 t1, t0, [t5, PROPERTY_LOOKUP_CACHE_ENTRY0_PROPERTY_OFFSET], [t5, PROPERTY_LOOKUP_CACHE_ENTRY0_DICTIONARY_GENERATION]
     load32 t2, [t4, SHAPE_DICTIONARY_GENERATION]
     branch_ne t0, t2, .try_cache
     # Check current value at property_offset is not an accessor
-    load32 t0, [t5, PROPERTY_LOOKUP_CACHE_ENTRY0_PROPERTY_OFFSET]
     load64 t5, [t3, OBJECT_NAMED_PROPERTIES]
-    load64 t2, [t5, t0, 8]
+    load64 t2, [t5, t1, 8]
     extract_tag t4, t2
     branch_eq t4, ACCESSOR_TAG, .try_cache
     # IC hit! Store new value via put_direct
     # Save property offset in t4 before load_operand clobbers t0 (rax)
-    mov t4, t0
+    mov t4, t1
     load_operand t1, m_src
     store64 [t5, t4, 8], t1
     dispatch_next
@@ -1812,20 +1828,17 @@ handler GetLength
     # Non-magical length: IC fast path (same as GetById)
     load64 t4, [t3, OBJECT_SHAPE]
     load64 t5, [pb, pc, m_cache]
-    # Check entry[0].shape matches (direct pointer compare)
-    load64 t0, [t5, PROPERTY_LOOKUP_CACHE_ENTRY0_SHAPE]
-    branch_ne t0, t4, .slow
-    # Check entry[0].prototype is null (own-property only)
-    load64 t0, [t5, PROPERTY_LOOKUP_CACHE_ENTRY0_PROTOTYPE]
+    # Check entry[0].shape and entry[0].prototype.
+    load_pair64 t1, t0, [t5, PROPERTY_LOOKUP_CACHE_ENTRY0_SHAPE], [t5, PROPERTY_LOOKUP_CACHE_ENTRY0_PROTOTYPE]
+    branch_ne t1, t4, .slow
     branch_nonzero t0, .slow
     # Check dictionary generation
-    load32 t0, [t5, PROPERTY_LOOKUP_CACHE_ENTRY0_DICTIONARY_GENERATION]
+    load_pair32 t1, t0, [t5, PROPERTY_LOOKUP_CACHE_ENTRY0_PROPERTY_OFFSET], [t5, PROPERTY_LOOKUP_CACHE_ENTRY0_DICTIONARY_GENERATION]
     load32 t2, [t4, SHAPE_DICTIONARY_GENERATION]
     branch_ne t0, t2, .slow
     # IC hit
-    load32 t0, [t5, PROPERTY_LOOKUP_CACHE_ENTRY0_PROPERTY_OFFSET]
     load64 t5, [t3, OBJECT_NAMED_PROPERTIES]
-    load64 t0, [t5, t0, 8]
+    load64 t0, [t5, t1, 8]
     extract_tag t2, t0
     branch_eq t2, ACCESSOR_TAG, .slow
     store_operand m_dst, t0
@@ -1854,8 +1867,7 @@ end
 handler GetGlobal
     # Load global_declarative_environment and global_object via realm
     load64 t0, [exec_ctx, EXECUTION_CONTEXT_REALM]
-    load64 t2, [t0, REALM_GLOBAL_OBJECT]
-    load64 t1, [t0, REALM_GLOBAL_DECLARATIVE_ENVIRONMENT]
+    load_pair64 t2, t1, [t0, REALM_GLOBAL_OBJECT], [t0, REALM_GLOBAL_DECLARATIVE_ENVIRONMENT]
     # Get GlobalVariableCache* (direct pointer from instruction stream)
     load64 t3, [pb, pc, m_cache]
     # Check environment_serial_number matches
@@ -1868,13 +1880,12 @@ handler GetGlobal
     load64 t0, [t3, PROPERTY_LOOKUP_CACHE_ENTRY0_SHAPE]
     branch_ne t0, t4, .try_env_binding
     # Check dictionary generation
-    load32 t0, [t3, PROPERTY_LOOKUP_CACHE_ENTRY0_DICTIONARY_GENERATION]
     load32 t5, [t4, SHAPE_DICTIONARY_GENERATION]
+    load_pair32 t4, t0, [t3, PROPERTY_LOOKUP_CACHE_ENTRY0_PROPERTY_OFFSET], [t3, PROPERTY_LOOKUP_CACHE_ENTRY0_DICTIONARY_GENERATION]
     branch_ne t0, t5, .try_env_binding
     # IC hit! Load property value via get_direct
-    load32 t0, [t3, PROPERTY_LOOKUP_CACHE_ENTRY0_PROPERTY_OFFSET]
     load64 t5, [t2, OBJECT_NAMED_PROPERTIES]
-    load64 t0, [t5, t0, 8]
+    load64 t0, [t5, t4, 8]
     # Check not accessor
     extract_tag t5, t0
     branch_eq t5, ACCESSOR_TAG, .slow
@@ -1912,8 +1923,7 @@ end
 handler SetGlobal
     # Load global_declarative_environment and global_object via realm
     load64 t0, [exec_ctx, EXECUTION_CONTEXT_REALM]
-    load64 t2, [t0, REALM_GLOBAL_OBJECT]
-    load64 t1, [t0, REALM_GLOBAL_DECLARATIVE_ENVIRONMENT]
+    load_pair64 t2, t1, [t0, REALM_GLOBAL_OBJECT], [t0, REALM_GLOBAL_DECLARATIVE_ENVIRONMENT]
     # Get GlobalVariableCache* (direct pointer from instruction stream)
     load64 t3, [pb, pc, m_cache]
     # Check environment_serial_number matches
@@ -1926,19 +1936,18 @@ handler SetGlobal
     load64 t0, [t3, PROPERTY_LOOKUP_CACHE_ENTRY0_SHAPE]
     branch_ne t0, t4, .try_env_binding
     # Check dictionary generation
-    load32 t0, [t3, PROPERTY_LOOKUP_CACHE_ENTRY0_DICTIONARY_GENERATION]
     load32 t5, [t4, SHAPE_DICTIONARY_GENERATION]
+    load_pair32 t4, t0, [t3, PROPERTY_LOOKUP_CACHE_ENTRY0_PROPERTY_OFFSET], [t3, PROPERTY_LOOKUP_CACHE_ENTRY0_DICTIONARY_GENERATION]
     branch_ne t0, t5, .try_env_binding
     # IC hit! Load current value to check it's not an accessor
-    load32 t1, [t3, PROPERTY_LOOKUP_CACHE_ENTRY0_PROPERTY_OFFSET]
     load64 t5, [t2, OBJECT_NAMED_PROPERTIES]
-    load64 t4, [t5, t1, 8]
-    extract_tag t4, t4
-    branch_eq t4, ACCESSOR_TAG, .slow
+    load64 t0, [t5, t4, 8]
+    extract_tag t0, t0
+    branch_eq t0, ACCESSOR_TAG, .slow
     # Store new value via put_direct
-    # NB: load_operand clobbers t0, so property offset must be in t1.
-    load_operand t4, m_src
-    store64 [t5, t1, 8], t4
+    # NB: load_operand clobbers t0, so property offset stays in t4.
+    load_operand t0, m_src
+    store64 [t5, t4, 8], t0
     dispatch_next
 .try_env_binding:
     # Check if cache has an environment binding index (global let/const)
@@ -1971,11 +1980,224 @@ handler SetGlobal
 end
 
 handler Call
-    # Try to inline the call
+    # Inline JS-to-JS Call in asm when the callee is an ECMAScriptFunctionObject
+    # with bytecode ready. Cases that need function-environment allocation or
+    # sloppy primitive this boxing bounce through a C++ helper that still
+    # prepares an inline frame instead of taking the full slow path.
+    #
+    # High-level flow:
+    #   1. Validate the callee and load its shared function metadata.
+    #   2. Bind `this` inline when we can do so without allocations.
+    #   3. Reserve an InterpreterStack frame and populate ExecutionContext.
+    #   4. Materialize [registers | locals | constants | arguments].
+    #   5. Swap VM state over to the callee frame and dispatch at pc = 0.
+    #
+    # Register usage within this handler:
+    #   t3 = callee ECMAScriptFunctionObject*
+    #   t2 = asm-call metadata / later callee ExecutionContext*
+    #   t7 = callee Executable* carried across `this` binding
+    #   t8 = boxed `this` value carried into the callee
+    load_operand t0, m_callee
+    extract_tag t1, t0
+    branch_ne t1, OBJECT_TAG, .call_slow
+    unbox_object t0, t0
+    mov t3, t0
+
+    # Reject everything except ordinary ECMAScript function objects with
+    # already-prepared bytecode and cached inline-call eligibility.
+    load8 t1, [t3, OBJECT_FLAGS]
+    branch_bits_clear t1, OBJECT_FLAG_IS_ECMASCRIPT_FUNCTION_OBJECT, .call_slow
+
+    load64 t2, [t3, ECMASCRIPT_FUNCTION_OBJECT_SHARED_DATA]
+    load_pair64 t7, t2, [t2, SHARED_FUNCTION_INSTANCE_DATA_EXECUTABLE], [t2, SHARED_FUNCTION_INSTANCE_DATA_ASM_CALL_METADATA]
+    branch_bits_clear t2, SHARED_FUNCTION_INSTANCE_DATA_ASM_CALL_METADATA_CAN_INLINE_CALL, .call_slow
+    # NewFunctionEnvironment() allocates and has to stay out of the pure asm
+    # path, but we still preserve inline-call semantics via .call_interp_inline.
+    branch_bits_set t2, SHARED_FUNCTION_INSTANCE_DATA_ASM_CALL_METADATA_FUNCTION_ENVIRONMENT_NEEDED, .call_interp_inline
+
+    # Bind this without allocations. Sloppy primitive this-values still need
+    # ToObject(), so they use the C++ inline-frame helper.
+    #
+    # t8 starts as "empty" to match the normal interpreter behavior for
+    # callees that never observe `this`.
+    mov t8, EMPTY_TAG_SHIFTED
+    branch_bits_clear t2, SHARED_FUNCTION_INSTANCE_DATA_ASM_CALL_METADATA_USES_THIS, .this_ready
+    load_operand t8, m_this_value
+    branch_bits_set t2, SHARED_FUNCTION_INSTANCE_DATA_ASM_CALL_METADATA_STRICT, .this_ready
+
+    # Sloppy null/undefined binds the callee realm's global object.
+    # Sloppy primitive receivers need ToObject(), which may allocate wrappers,
+    # so they go through the helper instead of the full Call slow path.
+    extract_tag t1, t8
+    mov t0, t1
+    and t0, 0xFFFE
+    branch_eq t0, UNDEFINED_TAG, .sloppy_global_this
+    branch_eq t1, OBJECT_TAG, .this_ready
+    jmp .call_interp_inline
+
+.sloppy_global_this:
+    load64 t1, [t3, OBJECT_SHAPE]
+    load64 t1, [t1, SHAPE_REALM]
+    load64 t1, [t1, REALM_GLOBAL_ENVIRONMENT]
+    load64 t1, [t1, GLOBAL_ENVIRONMENT_GLOBAL_THIS_VALUE]
+    # Match Value(Object*): keep only the low 48 pointer bits before boxing.
+    shl t1, 16
+    shr t1, 16
+    mov t8, OBJECT_TAG_SHIFTED
+    or t8, t1
+
+.this_ready:
+    # The low 32 bits of the packed metadata word hold the formal parameter count.
+    and t2, 0xFFFFFFFF
+
+    load32 t6, [pb, pc, m_argument_count]
+    mov t4, t2
+    branch_ge_unsigned t4, t6, .arg_count_ready
+    mov t4, t6
+.arg_count_ready:
+    load_pair32 t5, t1, [t7, EXECUTABLE_REGISTERS_AND_LOCALS_COUNT], [t7, EXECUTABLE_REGISTERS_AND_LOCALS_AND_CONSTANTS_COUNT]
+
+    # Inline InterpreterStack::allocate().
+    # t1 = total Value slots, t2 = new stack top, t6 = current frame base.
+    add t1, t4
+    mov t2, t1
+    shl t2, 3
+    add t2, SIZEOF_EXECUTION_CONTEXT
+
+    load_vm t0
+    lea t0, [t0, VM_INTERPRETER_STACK]
+    load_pair64 t6, t0, [t0, INTERPRETER_STACK_TOP], [t0, INTERPRETER_STACK_LIMIT]
+    add t2, t6
+    branch_ge_unsigned t0, t2, .stack_ok
+    jmp .call_slow
+
+.stack_ok:
+    load_vm t0
+    store64 [t0, VM_INTERPRETER_STACK_TOP], t2
+
+    # Set up the callee ExecutionContext header exactly the way
+    # VM::push_inline_frame() / run_executable() would see it.
+    mov t2, t6
+    lea t6, [t6, SIZEOF_EXECUTION_CONTEXT]
+    store_pair32 [t2, EXECUTION_CONTEXT_REGISTERS_AND_CONSTANTS_AND_LOCALS_AND_ARGUMENTS_COUNT], [t2, EXECUTION_CONTEXT_ARGUMENT_COUNT], t1, t4
+    load32 t0, [pb, pc, m_argument_count]
+    store32 [t2, EXECUTION_CONTEXT_PASSED_ARGUMENT_COUNT], t0
+
+    load64 t0, [t3, OBJECT_SHAPE]
+    load64 t0, [t0, SHAPE_REALM]
+    store_pair64 [t2, EXECUTION_CONTEXT_FUNCTION], [t2, EXECUTION_CONTEXT_REALM], t3, t0
+
+    load_pair64 t0, t1, [t3, ECMASCRIPT_FUNCTION_OBJECT_ENVIRONMENT], [t3, ECMASCRIPT_FUNCTION_OBJECT_PRIVATE_ENVIRONMENT]
+    store_pair64 [t2, EXECUTION_CONTEXT_LEXICAL_ENVIRONMENT], [t2, EXECUTION_CONTEXT_VARIABLE_ENVIRONMENT], t0, t0
+    store64 [t2, EXECUTION_CONTEXT_PRIVATE_ENVIRONMENT], t1
+    store_pair64 [t2, EXECUTION_CONTEXT_THIS_VALUE], [t2, EXECUTION_CONTEXT_EXECUTABLE], t8, t7
+
+    mov t1, EMPTY_TAG_SHIFTED
+    store_pair64 [t6, ACCUMULATOR_REG_OFFSET], [t6, EXCEPTION_REG_OFFSET], t1, t1
+    store64 [t6, THIS_VALUE_REG_OFFSET], t8
+    store_pair64 [t6, RETURN_VALUE_REG_OFFSET], [t6, SAVED_LEXICAL_ENVIRONMENT_REG_OFFSET], t1, t1
+
+    # ScriptOrModule is a two-word Variant in ExecutionContext, so copy both
+    # machine words explicitly.
+    lea t0, [t2, EXECUTION_CONTEXT_SCRIPT_OR_MODULE]
+    lea t7, [t3, ECMASCRIPT_FUNCTION_OBJECT_SCRIPT_OR_MODULE]
+    load_pair64 t3, t8, [t7, 0], [t7, 8]
+    store64 [t0, 0], t3
+    store64 [t0, 8], t8
+
+    store32 [t2, EXECUTION_CONTEXT_PROGRAM_COUNTER], 0
+    store32 [t2, EXECUTION_CONTEXT_SKIP_WHEN_DETERMINING_INCUMBENT_COUNTER], 0
+    mov t0, EXECUTION_CONTEXT_NO_YIELD_CONTINUATION
+    store32 [t2, EXECUTION_CONTEXT_YIELD_CONTINUATION], t0
+    store8 [t2, EXECUTION_CONTEXT_YIELD_IS_AWAIT], 0
+    store8 [t2, EXECUTION_CONTEXT_CALLER_IS_CONSTRUCT], 0
+    store64 [t2, EXECUTION_CONTEXT_CALLER_FRAME], exec_ctx
+    load_pair32 t0, t1, [pb, pc, m_length], [pb, pc, m_dst]
+    lea t3, [pb, pc]
+    sub t3, pb
+    add t0, t3
+    store_pair32 [t2, EXECUTION_CONTEXT_CALLER_RETURN_PC], [t2, EXECUTION_CONTEXT_CALLER_DST_RAW], t0, t1
+
+    # values = [registers | locals | constants | arguments]
+    # Keep t2 at the ExecutionContext base while t6 walks the Value tail.
+    mov t0, t5
+    shl t0, 3
+    mov t3, RESERVED_REGISTERS_SIZE
+.clear_registers_and_locals:
+    mov t8, t3
+    add t8, 8
+    branch_ge_unsigned t8, t0, .clear_registers_and_locals_tail
+    store_pair64 [t6, t3, 0], [t6, t3, 8], t1, t1
+    add t3, 16
+    jmp .clear_registers_and_locals
+
+.clear_registers_and_locals_tail:
+    branch_ge_unsigned t3, t0, .copy_constants
+    store64 [t6, t3], t1
+
+.copy_constants:
+    load64 t0, [t2, EXECUTION_CONTEXT_EXECUTABLE]
+    load_pair64 t3, t0, [t0, EXECUTABLE_ASM_CONSTANTS_SIZE], [t0, EXECUTABLE_ASM_CONSTANTS_DATA]
+    mov t1, t5
+    xor t8, t8
+.copy_constants_loop:
+    branch_ge_unsigned t8, t3, .copy_arguments
+    load64 t7, [t0, t8, 8]
+    store64 [t6, t1, 8], t7
+    add t8, 1
+    add t1, 1
+    jmp .copy_constants_loop
+
+.copy_arguments:
+    load32 t7, [pb, pc, m_argument_count]
+    mov t1, t5
+    add t1, t3
+    lea t0, [exec_ctx, SIZEOF_EXECUTION_CONTEXT]
+    lea t8, [pb, pc]
+    add t8, m_expression_string
+    add t8, 4
+    xor t3, t3
+.copy_arguments_loop:
+    # The operand array in the bytecode stores caller register indices.
+    branch_ge_unsigned t3, t7, .fill_missing_arguments
+    load32 t5, [t8, t3, 4]
+    load64 t5, [t0, t5, 8]
+    store64 [t6, t1, 8], t5
+    add t3, 1
+    add t1, 1
+    jmp .copy_arguments_loop
+
+.fill_missing_arguments:
+    mov t3, t1
+    add t3, t4
+    sub t3, t7
+    mov t0, UNDEFINED_SHIFTED
+.fill_missing_arguments_loop:
+    branch_ge_unsigned t1, t3, .enter_callee
+    store64 [t6, t1, 8], t0
+    add t1, 1
+    jmp .fill_missing_arguments_loop
+
+.enter_callee:
+    load64 pb, [t2, EXECUTION_CONTEXT_EXECUTABLE]
+    load64 pb, [pb, EXECUTABLE_BYTECODE_DATA]
+    load_vm t0
+    store64 [t0, VM_RUNNING_EXECUTION_CONTEXT], t2
+    mov exec_ctx, t2
+    lea values, [exec_ctx, SIZEOF_EXECUTION_CONTEXT]
+    xor pc, pc
+    dispatch_current
+.call_interp_inline:
+    # Shared escape hatch for the cases that need C++ help to build the inline
+    # frame correctly but must not take the full Call slow path, since that
+    # would insert a run_executable() boundary and observable microtask drain.
     call_interp asm_try_inline_call
     branch_nonzero t0, .call_slow
-    # Success: reload pb/values from new execution context, pc=0
-    reload_state_from_exec_ctx
+    load_vm t0
+    load64 exec_ctx, [t0, VM_RUNNING_EXECUTION_CONTEXT]
+    lea values, [exec_ctx, SIZEOF_EXECUTION_CONTEXT]
+    load64 t0, [exec_ctx, EXECUTION_CONTEXT_EXECUTABLE]
+    load64 pb, [t0, EXECUTABLE_BYTECODE_DATA]
     xor pc, pc
     dispatch_current
 .call_slow:
@@ -2242,9 +2464,8 @@ handler ObjectPropertyIteratorNext
     # These guards mirror PropertyNameIterator::fast_path_still_valid(). If the
     # receiver or prototype chain no longer matches the cached snapshot, we drop
     # to C++ and continue in deoptimized mode for the rest of the enumeration.
-    load64 t5, [t3, PROPERTY_NAME_ITERATOR_PROPERTY_CACHE]
+    load_pair64 t5, t7, [t3, PROPERTY_NAME_ITERATOR_PROPERTY_CACHE], [t3, PROPERTY_NAME_ITERATOR_SHAPE]
     load64 t6, [t3, PROPERTY_NAME_ITERATOR_OBJECT]
-    load64 t7, [t3, PROPERTY_NAME_ITERATOR_SHAPE]
     load64 t8, [t6, OBJECT_SHAPE]
     branch_ne t8, t7, .slow
 
@@ -2273,8 +2494,7 @@ handler ObjectPropertyIteratorNext
 .next_key:
     # property_values is laid out as:
     #   [receiver packed index keys..., flattened named keys...]
-    load32 t0, [t3, PROPERTY_NAME_ITERATOR_NEXT_INDEXED_PROPERTY]
-    load32 t2, [t3, PROPERTY_NAME_ITERATOR_INDEXED_PROPERTY_COUNT]
+    load_pair32 t2, t0, [t3, PROPERTY_NAME_ITERATOR_INDEXED_PROPERTY_COUNT], [t3, PROPERTY_NAME_ITERATOR_NEXT_INDEXED_PROPERTY]
     branch_ge_unsigned t0, t2, .named
     load64 t8, [t5, OBJECT_PROPERTY_ITERATOR_CACHE_DATA_PROPERTY_VALUES_DATA]
     load64 t8, [t8, t0, 8]
@@ -2288,7 +2508,6 @@ handler ObjectPropertyIteratorNext
 .named:
     load64 t0, [t3, PROPERTY_NAME_ITERATOR_NEXT_PROPERTY]
     load64 t8, [t5, OBJECT_PROPERTY_ITERATOR_CACHE_DATA_PROPERTY_VALUES_SIZE]
-    load32 t2, [t3, PROPERTY_NAME_ITERATOR_INDEXED_PROPERTY_COUNT]
     sub t8, t2
     branch_ge_unsigned t0, t8, .done
     mov t8, t0
