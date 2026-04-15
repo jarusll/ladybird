@@ -63,7 +63,7 @@ def handler_class_for_type(type, re=re.compile('^([^<]+)(<.*>)?$')):
         return AKStringImpl
     elif klass == 'AK::Variant':
         return AKVariant
-    elif klass == 'AK::Optional':
+    elif klass == 'AK::Optional': # fixed
         return AKOptional
     elif klass == 'AK::Vector': # fixed
         return AKVector
@@ -332,21 +332,27 @@ class AKVariant:
         names = ", ".join(handler_class_for_type(t).prettyprint_type(t) for t in AKVariant.resolve_types(ty))
         return f'AK::Variant<{names}>'
 
-
 class AKOptional:
     def __init__(self, val):
         self.val = val
-        self.has_value = bool(self.val["m_has_value"])
-        self.contained_type = self.val.type.strip_typedefs().template_argument(0)
 
     def to_string(self):
         return AKOptional.prettyprint_type(self.val.type)
 
     def children(self):
-        if self.has_value:
+        field_names = [f.name for f in self.val.type.fields()]
+
+        if 'm_has_value' in field_names:
             data = self.val["m_storage"]
-            return [(self.contained_type.name, data.cast(self.contained_type.pointer()).referenced_value())]
-        return [("OptionalNone", "{}")]
+        elif 'm_pointer' in field_names:
+            data = self.val["m_pointer"].dereference()
+        elif any('SentinelOptional' in str(n) for n in field_names if n):
+            data = self.val["m_value"]
+        else:
+            return [("OptionalNone", "{}")]
+
+        self.contained_type = self.val.type.strip_typedefs().template_argument(0)
+        return [(self.contained_type.name, data)]
 
     @classmethod
     def prettyprint_type(cls, type):
