@@ -39,8 +39,6 @@ def handler_class_for_type(type, re=re.compile('^([^<]+)(<.*>)?$')):
         return AKDistinctNumeric
     elif klass == 'AK::FixedArray': # works
         return AKFixedArrayPrinter
-    elif klass == 'AK::FixedStringBuffer': # missing
-        return AKFixedStringBuffer
     elif klass == 'AK::HashMap':
         return AKHashMapPrettyPrinter
     elif klass == 'AK::RefCounted':
@@ -59,16 +57,12 @@ def handler_class_for_type(type, re=re.compile('^([^<]+)(<.*>)?$')):
         return AKDeprecatedString
     elif klass == 'AK::StringView': # works
         return AKStringView
-    elif klass == 'AK::StringImpl': # missing
-        return AKStringImpl
-    elif klass == 'AK::Variant':
+    elif klass == 'AK::Variant': # works
         return AKVariant
     elif klass == 'AK::Optional': # fixed
         return AKOptional
     elif klass == 'AK::Vector': # fixed
         return AKVector
-    elif klass == 'VirtualAddress': # missing
-        return VirtualAddress
     else:
         return UnhandledType
 
