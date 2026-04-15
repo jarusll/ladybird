@@ -35,7 +35,7 @@ def handler_class_for_type(type, re=re.compile('^([^<]+)(<.*>)?$')):
         return AKAtomic
     elif klass == 'AK::Detail::IntrusiveList':
         return AKIntrusiveList
-    elif klass == 'AK::DistinctNumeric':
+    elif klass == 'AK::DistinctNumeric': # works
         return AKDistinctNumeric
     elif klass == 'AK::FixedArray': # works
         return AKFixedArrayPrinter
@@ -49,7 +49,7 @@ def handler_class_for_type(type, re=re.compile('^([^<]+)(<.*>)?$')):
         return AKOwnPtr
     elif klass == 'AK::NonnullRefPtr':
         return AKRefPtr
-    elif klass == 'AK::SinglyLinkedList':
+    elif klass == 'AK::SinglyLinkedList': # works
         return AKSinglyLinkedList
     elif klass == 'AK::String': # works
         return AKString
