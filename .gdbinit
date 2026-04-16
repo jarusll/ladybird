@@ -39,7 +39,7 @@ def handler_class_for_type(type, re=re.compile('^([^<]+)(<.*>)?$')):
         return AKDistinctNumeric
     elif klass == 'AK::FixedArray': # works
         return AKFixedArrayPrinter
-    elif klass == 'AK::HashMap':
+    elif klass == 'AK::HashMap': # works
         return AKHashMapPrettyPrinter
     elif klass == 'AK::RefCounted':
         return AKRefCounted
@@ -418,10 +418,9 @@ class AKHashMapPrettyPrinter:
     def _iter_hashtable(val, cb):
         entry_type_ptr = val.type.template_argument(0).pointer()
         buckets = val["m_buckets"]
-        for i in range(0, val["m_capacity"]):
+        for i in range(0, int(val["m_mask"]) + 1):
             bucket = buckets[i]
-            # if state == Used
-            if bucket["state"] & 0xf0 == 0x10:
+            if int(bucket["state"]) != 0:
                 cb(bucket["storage"].cast(entry_type_ptr))
 
     @staticmethod
@@ -432,11 +431,16 @@ class AKHashMapPrettyPrinter:
     def to_string(self):
         return AKHashMapPrettyPrinter.prettyprint_type(self.val.type)
 
+    def display_hint(self):
+        return 'map'
+
     def children(self):
         elements = []
 
         def cb(key, value):
-            elements.append((f"[{key}]", value))
+            index = len(elements) // 2
+            elements.append((f"key[{index}]", key))
+            elements.append((f"value[{index}]", value))
 
         AKHashMapPrettyPrinter._iter_hashmap(self.val, cb)
         return elements
