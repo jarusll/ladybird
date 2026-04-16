@@ -41,13 +41,13 @@ def handler_class_for_type(type, re=re.compile('^([^<]+)(<.*>)?$')):
         return AKFixedArrayPrinter
     elif klass == 'AK::HashMap': # works
         return AKHashMapPrettyPrinter
-    elif klass == 'AK::RefCounted':
+    elif klass == 'AK::RefCounted': # works
         return AKRefCounted
-    elif klass == 'AK::RefPtr':
+    elif klass == 'AK::RefPtr': # works
         return AKRefPtr
-    elif klass == 'AK::OwnPtr':
+    elif klass == 'AK::OwnPtr': # works
         return AKOwnPtr
-    elif klass == 'AK::NonnullRefPtr':
+    elif klass == 'AK::NonnullRefPtr': # works
         return AKRefPtr
     elif klass == 'AK::SinglyLinkedList': # works
         return AKSinglyLinkedList
@@ -264,7 +264,11 @@ class AKOwnPtr:
         return AKOwnPtr.prettyprint_type(self.val.type)
 
     def children(self):
-        return [('*', self.val["m_ptr"])]
+        pointee = self.val["m_ptr"].dereference()
+        handler = handler_class_for_type(pointee.type)
+        if handler != UnhandledType:
+            return handler(pointee).children()
+        return [('*', pointee)]
 
     @classmethod
     def prettyprint_type(cls, type):
@@ -285,7 +289,11 @@ class AKRefPtr:
         return self.val["m_ptr"].cast(inner_type_ptr)
 
     def children(self):
-        return [('*', self.get_pointee())]
+        pointee = self.get_pointee().dereference()
+        handler = handler_class_for_type(pointee.type)
+        if handler != UnhandledType:
+            return handler(pointee).children()
+        return [('*', pointee)]
 
     @classmethod
     def prettyprint_type(cls, type):
