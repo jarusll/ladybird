@@ -90,7 +90,14 @@ class AKIntrusiveList:
     def __init__(self, val: gdb.Value):
         self.val = val
         self.element_type = self.val.type.template_argument(0)
-        self.node_member_offset = int(self.val.type.template_argument(2).cast(void_ptr))
+
+        node_member_offset = 0
+        for field in self.element_type.fields():
+            if 'IntrusiveListNode' in str(field.type):
+                node_member_offset = field.bitpos // 8
+                break
+
+        self.node_member_offset = node_member_offset
 
     def _node_to_value(self, node_ptr: gdb.Value) -> gdb.Value:
         return (node_ptr.cast(void_ptr) - self.node_member_offset).cast(self.element_type.pointer()).dereference()
