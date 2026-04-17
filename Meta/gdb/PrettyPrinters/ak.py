@@ -195,6 +195,19 @@ class AKDeprecatedString:
     def prettyprint_type(cls, type):
         return 'AK::ByteString'
 
+class AKStringImpl:
+    def __init__(self, val):
+        self.val = val
+
+    def to_string(self):
+        if int(self.val["m_length"]) == 0:
+            return '""'
+        else:
+            return self.val["m_inline_buffer"].string(length=self.val["m_length"])
+
+    @classmethod
+    def prettyprint_type(cls, type):
+        return 'AK::StringImpl'
 
 class AKStringView:
     def __init__(self, val):
