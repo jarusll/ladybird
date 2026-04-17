@@ -211,45 +211,6 @@ void ConnectionFromClient::start_request(u64 request_id, ByteString method, URL:
 {
     dbgln_if(REQUESTSERVER_DEBUG, "RequestServer: start_request({}, {})", request_id, url);
 
-    // Vector<StringView> vector;
-    // vector.append("RequestServer"sv);
-
-    // AK::SinglyLinkedList<StringView> list;
-    // list.append("RequestServer"sv);
-    // list.append("Hello"sv);
-    // list.append("World"sv);
-
-    // AK::Atomic<u8> counter { 77 };
-    // dbgln("Counter: {}", counter.load());
-
-    // [[maybe_unused]] AK::Array<u8, 5> bytes { 1, 2, 3, 4, 5 };
-
-    // FixedArray<StringView> array(FixedArray<StringView>::create(5).release_value());
-    // array[0] = "Hello"sv;
-    // array[1] = "World"sv;
-    // array[2] = "!"sv;
-    // array[3] = "How"sv;
-    // array[4] = "Are"sv;
-
-    // Optional<StringView> maybe_string;
-    // maybe_string = "Now I have a value"sv;
-
-    // Optional<u8> maybe_u8;
-    // maybe_u8 = 8;
-
-    // Optional<String> maybe_string2;
-    // maybe_string2 = MUST(String::from_utf8("Hello from String"sv));
-
-    // Variant<StringView, u8> variant = "Suraj"sv;
-
-    HashMap<StringView, int> counts {
-        { "alpha"sv, 1 },
-        { "beta"sv, 2 },
-        { "gamma"sv, 3 },
-        { "delta"sv, 4 },
-        { "epsilon"sv, 5 },
-    };
-
     auto request = Request::fetch(request_id, m_disk_cache, cache_mode, *this, m_curl_multi, m_resolver, move(url), move(method), HTTP::HeaderList::create(move(request_headers)), move(request_body), include_credentials, m_alt_svc_cache_path, proxy_data);
     m_active_requests.set(request_id, move(request));
 }
