@@ -42,16 +42,12 @@ def handler_class_for_type(type, re=re.compile('^([^<]+)(<.*>)?$')):
         return AKDeprecatedString
     elif klass == 'AK::StringView':
         return AKStringView
-    elif klass == 'AK::StringImpl':
-        return AKStringImpl
     elif klass == 'AK::Variant':
         return AKVariant
     elif klass == 'AK::Optional':
         return AKOptional
     elif klass == 'AK::Vector':
         return AKVector
-    elif klass == 'VirtualAddress':
-        return VirtualAddress
     else:
         return UnhandledType
 
@@ -428,20 +424,7 @@ class AKSinglyLinkedList:
         template_type = type.template_argument(0)
         return f'AK::SinglyLinkedList<{handler_class_for_type(template_type).prettyprint_type(template_type)}>'
 
-
-class VirtualAddress:
-    def __init__(self, val):
-        self.val = val
-
-    def to_string(self):
-        return self.val["m_address"]
-
-    @classmethod
-    def prettyprint_type(cls, type):
-        return 'VirtualAddress'
-
-
-class SerenityPrettyPrinterLocator(gdb.printing.PrettyPrinter):
+class LadybirdPrettyPrinterLocator(gdb.printing.PrettyPrinter):
     def __init__(self):
         super(SerenityPrettyPrinterLocator, self).__init__("serenity_pretty_printers", [])
 
