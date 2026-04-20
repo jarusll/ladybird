@@ -2,11 +2,11 @@
 #
 # SPDX-License-Identifier: BSD-2-Clause
 
+import re
+
 import gdb
 import gdb.printing
 import gdb.types
-import re
-
 
 void_ptr = gdb.lookup_type('void').pointer()
 
@@ -30,8 +30,6 @@ def handler_class_for_type(type, re=re.compile('^([^<]+)(<.*>)?$')):
         return AKDistinctNumeric
     elif klass == 'AK::FixedArray':
         return AKFixedArrayPrinter
-    elif klass == 'AK::FixedStringBuffer':
-        return AKFixedStringBuffer
     elif klass == 'AK::HashMap':
         return AKHashMapPrettyPrinter
     elif klass == 'AK::RefCounted':
@@ -50,16 +48,12 @@ def handler_class_for_type(type, re=re.compile('^([^<]+)(<.*>)?$')):
         return AKDeprecatedString
     elif klass == 'AK::StringView':
         return AKStringView
-    elif klass == 'AK::StringImpl':
-        return AKStringImpl
     elif klass == 'AK::Variant':
         return AKVariant
     elif klass == 'AK::Optional':
         return AKOptional
     elif klass == 'AK::Vector':
         return AKVector
-    elif klass == 'VirtualAddress':
-        return VirtualAddress
     else:
         return UnhandledType
 
@@ -87,10 +81,18 @@ class AKIntrusiveList:
     def __init__(self, val: gdb.Value):
         self.val = val
         self.element_type = self.val.type.template_argument(0)
-        self.node_member_offset = int(self.val.type.template_argument(2).cast(void_ptr))
+
+        node_member_offset = 0
+        for field in self.element_type.fields():
+            if "IntrusiveListNode" in str(field.type):
+                node_member_offset = field.bitpos // 8
+                break
+
+        self.node_member_offset = node_member_offset
 
     def _node_to_value(self, node_ptr: gdb.Value) -> gdb.Value:
-        return (node_ptr.cast(void_ptr) - self.node_member_offset).cast(self.element_type.pointer()).dereference()
+        addr = int(node_ptr) - self.node_member_offset
+        return gdb.Value(addr).cast(self.element_type.pointer()).dereference()
 
     def to_string(self):
         return AKIntrusiveList.prettyprint_type(self.val.type)
@@ -107,7 +109,6 @@ class AKIntrusiveList:
     def prettyprint_type(cls, type):
         element_type = type.template_argument(0)
         return f'AK::IntrusiveList<{handler_class_for_type(element_type).prettyprint_type(element_type)}>'
-
 
 class AKDistinctNumeric:
     def __init__(self, val):
@@ -151,22 +152,6 @@ class AKFixedArrayPrinter:
     def prettyprint_type(cls, type):
         template_type = type.template_argument(0)
         return f'AK::FixedArray<{handler_class_for_type(template_type).prettyprint_type(template_type)}>'
-
-
-class AKFixedStringBuffer:
-    def __init__(self, val):
-        self.val = val
-
-    def to_string(self):
-        if int(self.val["m_stored_length"]) == 0:
-            return '""'
-        else:
-            return '"' + self.val["m_storage"]["__data"].string(length=self.val["m_stored_length"]) + '"'
-
-    @classmethod
-    def prettyprint_type(cls, type):
-        size = type.template_argument(0)
-        return f'AK::FixedStringBuffer<{size}>'
 
 
 class AKRefCounted:
@@ -336,7 +321,7 @@ class AKOptional:
     def children(self):
         if self.has_value:
             data = self.val["m_storage"]
-            return [(self.contained_type.name, data.cast(self.contained_type.pointer()).referenced_value())]
+            return [(self.contained_type.name, data)]
         return [("OptionalNone", "{}")]
 
     @classmethod
@@ -358,7 +343,7 @@ class AKVector:
         if vec_len == 0:
             return []
 
-        outline_buf = self.val["m_outline_buffer"]
+        outline_buf = self.val["m_metadata"]["outline_buffer"]
 
         inner_type_ptr = self.val.type.template_argument(0).pointer()
 
@@ -367,11 +352,8 @@ class AKVector:
         else:
             elements = get_field_unalloced(self.val, "m_inline_buffer_storage", inner_type_ptr)
 
-        # Very arbitrary limit, just to catch UAF'd and garbage vector values with a silly number of elements
-        if vec_len > 373373:
-            return []
-
         return [(f"[{i}]", elements[i]) for i in range(vec_len)]
+
 
     @classmethod
     def prettyprint_type(cls, type):
@@ -410,11 +392,14 @@ class AKHashMapPrettyPrinter:
     def _iter_hashtable(val, cb):
         entry_type_ptr = val.type.template_argument(0).pointer()
         buckets = val["m_buckets"]
-        for i in range(0, val["m_capacity"]):
+        for i in range(0, int(val["m_mask"]) + 1):
             bucket = buckets[i]
             # if state == Used
-            if bucket["state"] & 0xf0 == 0x10:
+            if int(bucket["state"]) != 0:
                 cb(bucket["storage"].cast(entry_type_ptr))
+
+    def display_hint(self):
+        return "map"
 
     @staticmethod
     def _iter_hashmap(val, cb):
@@ -428,7 +413,9 @@ class AKHashMapPrettyPrinter:
         elements = []
 
         def cb(key, value):
-            elements.append((f"[{key}]", value))
+            index = len(elements) // 2
+            elements.append((f"key[{index}]", key))
+            elements.append((f"value[{index}]", value))
 
         AKHashMapPrettyPrinter._iter_hashmap(self.val, cb)
         return elements
@@ -462,22 +449,9 @@ class AKSinglyLinkedList:
         template_type = type.template_argument(0)
         return f'AK::SinglyLinkedList<{handler_class_for_type(template_type).prettyprint_type(template_type)}>'
 
-
-class VirtualAddress:
-    def __init__(self, val):
-        self.val = val
-
-    def to_string(self):
-        return self.val["m_address"]
-
-    @classmethod
-    def prettyprint_type(cls, type):
-        return 'VirtualAddress'
-
-
-class SerenityPrettyPrinterLocator(gdb.printing.PrettyPrinter):
+class LadybirdPrettyPrinterLocator(gdb.printing.PrettyPrinter):
     def __init__(self):
-        super(SerenityPrettyPrinterLocator, self).__init__("serenity_pretty_printers", [])
+        super(LadybirdPrettyPrinterLocator, self).__init__("ladybird_pretty_printers", [])
 
     def __call__(self, val):
         type = gdb.types.get_basic_type(val.type)
@@ -487,46 +461,4 @@ class SerenityPrettyPrinterLocator(gdb.printing.PrettyPrinter):
         return handler(val)
 
 
-gdb.printing.register_pretty_printer(None, SerenityPrettyPrinterLocator(), replace=True)
-
-
-class FindThreadCmd(gdb.Command):
-    """
-    Find SerenityOS thread for the specified TID.
-    find_thread TID
-    """
-
-    def __init__(self):
-        super(FindThreadCmd, self).__init__(
-            "find_thread", gdb.COMMAND_USER
-        )
-
-    def _find_thread(self, tid):
-        threads = gdb.parse_and_eval("Kernel::Thread::g_tid_map")
-        thread = None
-
-        def cb(key, value):
-            nonlocal thread
-            if int(key["m_value"]) == tid:
-                thread = value
-
-        AKHashMapPrettyPrinter._iter_hashmap(threads, cb)
-        return thread
-
-    def complete(self, text, word):
-        return gdb.COMPLETE_SYMBOL
-
-    def invoke(self, args, from_tty):
-        argv = gdb.string_to_argv(args)
-        if len(argv) == 0:
-            gdb.write("Argument required (TID).\n")
-            return
-        tid = int(argv[0])
-        thread = self._find_thread(tid)
-        if not thread:
-            gdb.write(f"No thread with TID {tid} found.\n")
-        else:
-            gdb.write(f"{thread}\n")
-
-
-FindThreadCmd()
+gdb.printing.register_pretty_printer(None, LadybirdPrettyPrinterLocator(), replace=True)
