@@ -14,11 +14,6 @@ def ak_string_impl_summary(valobj, internal_dict):
         return '""'
 
     data = valobj.GetChildMemberWithName("m_inline_buffer")
-
-    s = data.GetSummary()
-    if s:
-        return s
-
     arr = data.GetPointeeData(0, length).uint8s
     return bytes(arr).decode("utf-8", "replace")
 
