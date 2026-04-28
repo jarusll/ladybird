@@ -28,6 +28,16 @@ def ak_bytestring_summary(valobj, internal_dict):
     impl = impl_ptr.Dereference()
     return ak_string_impl_summary(impl, internal_dict)
 
+
+def ak_stringview_summary(valobj, internal_dict):
+    length = valobj.GetChildMemberWithName("m_length").GetValueAsUnsigned()
+    if length == 0:
+        return '""'
+
+    characters = valobj.GetChildMemberWithName("m_characters")
+    arr = characters.GetPointeeData(0, length).uint8s
+    return '"' + bytes(arr).decode("utf-8", "replace") + '"'
+
 def __lldb_init_module(debugger, internal_dict):
     debugger.HandleCommand(
         "command script add -f ak.connect pyconnect --overwrite"
@@ -37,4 +47,7 @@ def __lldb_init_module(debugger, internal_dict):
     )
     debugger.HandleCommand(
         "type summary add -x \"^AK::ByteStringImpl(<.*>)?$\" -F ak.ak_string_impl_summary"
+    )
+    debugger.HandleCommand(
+        "type summary add -x \"^AK::StringView(<.*>)?$\" -F ak.ak_stringview_summary"
     )
