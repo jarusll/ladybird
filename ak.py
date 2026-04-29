@@ -216,16 +216,87 @@ def ak_ownptr_summary(valobj, internal_dict):
 
 
 def ak_nonnullrefptr_summary(valobj, internal_dict):
+    valobj = valobj.GetNonSyntheticValue()
     m_ptr = valobj.GetChildMemberWithName("m_ptr")
     ptr_value = m_ptr.GetValueAsUnsigned()
+
+    if ptr_value == 0:
+        return "nullptr"
+
     pointee = m_ptr.Dereference()
     if pointee.IsValid():
         ref_count = pointee.GetChildMemberWithName("m_ref_count")
         if ref_count.IsValid():
             ref_count_val = ref_count.GetValueAsUnsigned()
-            return f"(ref_count={ref_count_val}) {hex(ptr_value)}"
+            return f"{hex(ptr_value)} (ref_count={ref_count_val})"
         return hex(ptr_value)
     return hex(ptr_value)
+
+
+def ak_singlylinkedlist_summary(valobj, internal_dict):
+    valobj = valobj.GetNonSyntheticValue()
+    m_head = valobj.GetChildMemberWithName("m_head")
+
+    size = 0
+    node = m_head
+    while node.GetValueAsUnsigned() != 0:
+        size += 1
+        next_ptr = node.Dereference().GetChildMemberWithName("next")
+        node = next_ptr
+
+        if size > 10000:
+            break
+
+    return f"{valobj.GetTypeName()} size={size}"
+
+
+class AKSinglyLinkedListSynthProvider:
+    def __init__(self, valobj, internal_dict):
+        self.valobj = valobj.GetNonSyntheticValue()
+        self.update()
+
+    def update(self):
+        self.m_head = self.valobj.GetChildMemberWithName("m_head")
+        self.elements = []
+
+        node = self.m_head
+        self.value_type = None
+
+        if node.GetValueAsUnsigned() != 0:
+            node_type = node.GetType().GetPointeeType()
+            self.value_type = node_type.GetTemplateArgumentType(0)
+
+        while node.GetValueAsUnsigned() != 0:
+            deref = node.Dereference()
+            value = deref.GetChildMemberWithName("value")
+            self.elements.append(value)
+
+            next_ptr = deref.GetChildMemberWithName("next")
+            if next_ptr.GetValueAsUnsigned() == 0:
+                break
+            node = next_ptr
+
+            if len(self.elements) > 10000:
+                break
+
+    def has_children(self):
+        return len(self.elements) > 0
+
+    def num_children(self):
+        return len(self.elements)
+
+    def get_child_index(self, name):
+        if name.startswith("[") and name.endswith("]"):
+            try:
+                return int(name[1:-1])
+            except ValueError:
+                return -1
+        return -1
+
+    def get_child_at_index(self, index):
+        if index < 0 or index >= len(self.elements):
+            return None
+        return self.elements[index]
 
 
 def __lldb_init_module(debugger, internal_dict):
@@ -270,4 +341,10 @@ def __lldb_init_module(debugger, internal_dict):
     )
     debugger.HandleCommand(
         "type summary add -x \"^AK::NonnullRefPtr(<.*>)?$\" -F ak.ak_nonnullrefptr_summary"
+    )
+    debugger.HandleCommand(
+        "type summary add -x \"^AK::SinglyLinkedList(<.*>)?$\" -F ak.ak_singlylinkedlist_summary"
+    )
+    debugger.HandleCommand(
+        "type synthetic add -x \"^AK::SinglyLinkedList(<.*>)?$\" -l ak.AKSinglyLinkedListSynthProvider"
     )
