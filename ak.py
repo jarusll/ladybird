@@ -56,6 +56,11 @@ def ak_string_summary(valobj, internal_dict):
 
     return ak_stringview_summary(string_view, internal_dict)
 
+
+def ak_atomic_summary(valobj, internal_dict):
+    value = valobj.GetChildMemberWithName("m_value")
+    return value.GetSummary() or value.GetValue()
+
 def __lldb_init_module(debugger, internal_dict):
     debugger.HandleCommand(
         "command script add -f ak.connect pyconnect --overwrite"
@@ -71,4 +76,7 @@ def __lldb_init_module(debugger, internal_dict):
     )
     debugger.HandleCommand(
         "type summary add -x \"^AK::String(<.*>)?$\" -F ak.ak_string_summary"
+    )
+    debugger.HandleCommand(
+        "type summary add -x \"^AK::Atomic(<.*>)?$\" -F ak.ak_atomic_summary"
     )
