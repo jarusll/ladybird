@@ -63,6 +63,11 @@ def ak_atomic_summary(valobj, internal_dict):
     return value.GetSummary() or value.GetValueAsUnsigned()
 
 
+def ak_refcounted_summary(valobj, internal_dict):
+    value = valobj.GetChildMemberWithName("m_ref_count")
+    return value.GetSummary() or value.GetValue()
+
+
 def ak_fixedarray_summary(valobj, internal_dict):
     valobj = valobj.GetNonSyntheticValue()
     size = valobj.GetChildMemberWithName("m_size").GetValueAsUnsigned()
@@ -201,6 +206,9 @@ def __lldb_init_module(debugger, internal_dict):
     )
     debugger.HandleCommand(
         "type summary add -x \"^AK::Atomic(<.*>)?$\" -F ak.ak_atomic_summary"
+    )
+    debugger.HandleCommand(
+        "type summary add -x \"^AK::RefCounted(<.*>)?$\" -F ak.ak_refcounted_summary"
     )
     debugger.HandleCommand(
         "type summary add -x \"^AK::FixedArray(<.*>)?$\" -F ak.ak_fixedarray_summary"
