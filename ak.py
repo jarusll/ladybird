@@ -189,7 +189,6 @@ class AKHashMapSynthProvider:
         return val.Clone(f"[{key_str}]")
 
 def ak_refptr_summary(valobj, internal_dict):
-    valobj = valobj.GetNonSyntheticValue()
     m_ptr = valobj.GetChildMemberWithName("m_ptr")
     ptr_value = m_ptr.GetValueAsUnsigned()
 
@@ -201,10 +200,33 @@ def ak_refptr_summary(valobj, internal_dict):
         ref_count = pointee.GetChildMemberWithName("m_ref_count")
         if ref_count.IsValid():
             ref_count_val = ref_count.GetValueAsUnsigned()
-            return f"(ref_count={ref_count_val})"
+            return f"(ref_count={ref_count_val}) {hex(ptr_value)}"
         return hex(ptr_value)
+    return hex(ptr_value)
+
+
+def ak_ownptr_summary(valobj, internal_dict):
+    m_ptr = valobj.GetChildMemberWithName("m_ptr")
+    ptr_value = m_ptr.GetValueAsUnsigned()
+
+    if ptr_value == 0:
+        return "nullptr"
 
     return hex(ptr_value)
+
+
+def ak_nonnullrefptr_summary(valobj, internal_dict):
+    m_ptr = valobj.GetChildMemberWithName("m_ptr")
+    ptr_value = m_ptr.GetValueAsUnsigned()
+    pointee = m_ptr.Dereference()
+    if pointee.IsValid():
+        ref_count = pointee.GetChildMemberWithName("m_ref_count")
+        if ref_count.IsValid():
+            ref_count_val = ref_count.GetValueAsUnsigned()
+            return f"(ref_count={ref_count_val}) {hex(ptr_value)}"
+        return hex(ptr_value)
+    return hex(ptr_value)
+
 
 def __lldb_init_module(debugger, internal_dict):
     debugger.HandleCommand(
@@ -242,4 +264,10 @@ def __lldb_init_module(debugger, internal_dict):
     )
     debugger.HandleCommand(
         "type summary add -x \"^AK::RefPtr(<.*>)?$\" -F ak.ak_refptr_summary"
+    )
+    debugger.HandleCommand(
+        "type summary add -x \"^AK::OwnPtr(<.*>)?$\" -F ak.ak_ownptr_summary"
+    )
+    debugger.HandleCommand(
+        "type summary add -x \"^AK::NonnullRefPtr(<.*>)?$\" -F ak.ak_nonnullrefptr_summary"
     )
