@@ -69,9 +69,16 @@ def ak_fixedarray_summary(valobj, internal_dict):
     return f"{valobj.GetTypeName()} size={size}"
 
 
+def ak_hashmap_summary(valobj, internal_dict):
+    valobj = valobj.GetNonSyntheticValue()
+    table = valobj.GetChildMemberWithName("m_table")
+    size = table.GetChildMemberWithName("m_size").GetValueAsUnsigned()
+    return f"{valobj.GetTypeName()} size={size}"
+
+
 class AKFixedArraySynthProvider:
     def __init__(self, valobj, internal_dict):
-        self.valobj = valobj
+        self.valobj = valobj.GetNonSyntheticValue()
         self.update()
 
     def update(self):
@@ -105,6 +112,77 @@ class AKFixedArraySynthProvider:
             self.element_type,
         )
 
+
+class AKHashMapSynthProvider:
+    def __init__(self, valobj, internal_dict):
+        self.valobj = valobj.GetNonSyntheticValue()
+        self.entries = []
+        self.update()
+
+    def update(self):
+        self.entries = []
+
+        table = self.valobj.GetChildMemberWithName("m_table")
+        buckets = table.GetChildMemberWithName("m_buckets")
+        size = table.GetChildMemberWithName("m_size").GetValueAsUnsigned()
+        mask = table.GetChildMemberWithName("m_mask").GetValueAsUnsigned()
+
+        if size == 0 or buckets.GetValueAsUnsigned() == 0:
+            return
+
+        entry_type = table.GetType().GetTemplateArgumentType(0)
+        bucket_type = buckets.GetType().GetPointeeType()
+        bucket_size = bucket_type.GetByteSize()
+        target = self.valobj.GetTarget()
+
+        for i in range(mask + 1):
+            if len(self.entries) >= size:
+                break
+
+            bucket = buckets.CreateChildAtOffset(
+                f"bucket[{i}]",
+                i * bucket_size,
+                bucket_type,
+            )
+            state = bucket.GetChildMemberWithName("state").GetValueAsUnsigned()
+            if state == 0:
+                continue
+
+            storage = bucket.GetChildMemberWithName("storage")
+            entry = bucket.CreateValueFromAddress(
+                f"entry[{len(self.entries)}]",
+                storage.GetAddress().GetLoadAddress(target),
+                entry_type,
+            )
+            self.entries.append(entry)
+
+    def has_children(self):
+        return len(self.entries) > 0
+
+    def num_children(self):
+        return len(self.entries)
+
+    def get_child_index(self, name):
+        if name.startswith("[") and name.endswith("]"):
+            try:
+                return int(name[1:-1])
+            except ValueError:
+                return -1
+        return -1
+
+    def get_child_at_index(self, index):
+        if index < 0 or index >= len(self.entries):
+            return None
+
+        entry = self.entries[index]
+        key = entry.GetChildMemberWithName("key")
+        val = entry.GetChildMemberWithName("value")
+
+        key_str = key.GetSummary() or key.GetValue() or "?"
+        key_str = key_str.strip('"')
+
+        return val.Clone(f"[{key_str}]")
+
 def __lldb_init_module(debugger, internal_dict):
     debugger.HandleCommand(
         "command script add -f ak.connect pyconnect --overwrite"
@@ -129,4 +207,10 @@ def __lldb_init_module(debugger, internal_dict):
     )
     debugger.HandleCommand(
         "type synthetic add -x \"^AK::FixedArray(<.*>)?$\" -l ak.AKFixedArraySynthProvider"
+    )
+    debugger.HandleCommand(
+        "type summary add -x \"^AK::HashMap(<.*>)?$\" -F ak.ak_hashmap_summary"
+    )
+    debugger.HandleCommand(
+        "type synthetic add -x \"^AK::HashMap(<.*>)?$\" -l ak.AKHashMapSynthProvider"
     )
