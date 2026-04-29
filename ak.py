@@ -188,6 +188,24 @@ class AKHashMapSynthProvider:
 
         return val.Clone(f"[{key_str}]")
 
+def ak_refptr_summary(valobj, internal_dict):
+    valobj = valobj.GetNonSyntheticValue()
+    m_ptr = valobj.GetChildMemberWithName("m_ptr")
+    ptr_value = m_ptr.GetValueAsUnsigned()
+
+    if ptr_value == 0:
+        return "nullptr"
+
+    pointee = m_ptr.Dereference()
+    if pointee.IsValid():
+        ref_count = pointee.GetChildMemberWithName("m_ref_count")
+        if ref_count.IsValid():
+            ref_count_val = ref_count.GetValueAsUnsigned()
+            return f"(ref_count={ref_count_val})"
+        return hex(ptr_value)
+
+    return hex(ptr_value)
+
 def __lldb_init_module(debugger, internal_dict):
     debugger.HandleCommand(
         "command script add -f ak.connect pyconnect --overwrite"
@@ -221,4 +239,7 @@ def __lldb_init_module(debugger, internal_dict):
     )
     debugger.HandleCommand(
         "type synthetic add -x \"^AK::HashMap(<.*>)?$\" -l ak.AKHashMapSynthProvider"
+    )
+    debugger.HandleCommand(
+        "type summary add -x \"^AK::RefPtr(<.*>)?$\" -F ak.ak_refptr_summary"
     )
