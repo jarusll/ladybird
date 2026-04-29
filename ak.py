@@ -71,14 +71,14 @@ def ak_refcounted_summary(valobj, internal_dict):
 def ak_fixedarray_summary(valobj, internal_dict):
     valobj = valobj.GetNonSyntheticValue()
     size = valobj.GetChildMemberWithName("m_size").GetValueAsUnsigned()
-    return f"{valobj.GetTypeName()} size={size}"
+    return f"size={size}"
 
 
 def ak_hashmap_summary(valobj, internal_dict):
     valobj = valobj.GetNonSyntheticValue()
     table = valobj.GetChildMemberWithName("m_table")
     size = table.GetChildMemberWithName("m_size").GetValueAsUnsigned()
-    return f"{valobj.GetTypeName()} size={size}"
+    return f"size={size}"
 
 
 class AKFixedArraySynthProvider:
@@ -243,47 +243,50 @@ def ak_singlylinkedlist_summary(valobj, internal_dict):
         size += 1
         next_ptr = node.Dereference().GetChildMemberWithName("next")
         node = next_ptr
-
         if size > 10000:
             break
 
-    return f"{valobj.GetTypeName()} size={size}"
+    return f"size={size}"
 
 
-class AKSinglyLinkedListSynthProvider:
+def ak_vector_summary(valobj, internal_dict):
+    valobj = valobj.GetNonSyntheticValue()
+    m_size = valobj.GetChildMemberWithName("m_size")
+    size = m_size.GetValueAsUnsigned()
+    return f"size={size}"
+
+
+class AKVectorSynthProvider:
     def __init__(self, valobj, internal_dict):
         self.valobj = valobj.GetNonSyntheticValue()
         self.update()
 
     def update(self):
-        self.m_head = self.valobj.GetChildMemberWithName("m_head")
+        self.m_size = self.valobj.GetChildMemberWithName("m_size")
+        self.size = self.m_size.GetValueAsUnsigned()
         self.elements = []
+        self.element_type = None
 
-        node = self.m_head
-        self.value_type = None
+        if self.size == 0:
+            return
 
-        if node.GetValueAsUnsigned() != 0:
-            node_type = node.GetType().GetPointeeType()
-            self.value_type = node_type.GetTemplateArgumentType(0)
+        m_metadata = self.valobj.GetChildMemberWithName("m_metadata")
+        outline_buffer = m_metadata.GetChildMemberWithName("outline_buffer")
 
-        while node.GetValueAsUnsigned() != 0:
-            deref = node.Dereference()
-            value = deref.GetChildMemberWithName("value")
-            self.elements.append(value)
+        self.element_type = self.valobj.GetType().GetTemplateArgumentType(0)
 
-            next_ptr = deref.GetChildMemberWithName("next")
-            if next_ptr.GetValueAsUnsigned() == 0:
-                break
-            node = next_ptr
-
-            if len(self.elements) > 10000:
-                break
+        if outline_buffer.GetValueAsUnsigned() != 0:
+            elements_ptr = outline_buffer.Cast(self.element_type.GetPointerType())
+            self.elements_ptr = elements_ptr
+        else:
+            inline_buffer = self.valobj.GetChildMemberWithName("m_inline_buffer_storage")
+            self.elements_ptr = inline_buffer.Cast(self.element_type.GetPointerType())
 
     def has_children(self):
-        return len(self.elements) > 0
+        return self.size > 0
 
     def num_children(self):
-        return len(self.elements)
+        return self.size
 
     def get_child_index(self, name):
         if name.startswith("[") and name.endswith("]"):
@@ -294,9 +297,13 @@ class AKSinglyLinkedListSynthProvider:
         return -1
 
     def get_child_at_index(self, index):
-        if index < 0 or index >= len(self.elements):
+        if index < 0 or index >= self.size:
             return None
-        return self.elements[index]
+        return self.elements_ptr.CreateChildAtOffset(
+            f"[{index}]",
+            index * self.element_type.GetByteSize(),
+            self.element_type,
+        )
 
 
 def __lldb_init_module(debugger, internal_dict):
@@ -347,4 +354,10 @@ def __lldb_init_module(debugger, internal_dict):
     )
     debugger.HandleCommand(
         "type synthetic add -x \"^AK::SinglyLinkedList(<.*>)?$\" -l ak.AKSinglyLinkedListSynthProvider"
+    )
+    debugger.HandleCommand(
+        "type summary add -x \"^AK::Vector(<.*>)?$\" -F ak.ak_vector_summary"
+    )
+    debugger.HandleCommand(
+        "type synthetic add -x \"^AK::Vector(<.*>)?$\" -l ak.AKVectorSynthProvider"
     )
