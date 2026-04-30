@@ -1,5 +1,6 @@
-import lldb
 import debugpy
+import lldb
+
 
 def connect(debugger, command, result, internal_dict):
     debugpy.listen(("localhost", 5678))
@@ -145,7 +146,6 @@ def ak_stringview_summary(valobj, internal_dict):
         return '""'
 
     characters = valobj.GetChildMemberWithName("m_characters")
-    addr = characters.GetValueAsUnsigned()
     arr = characters.GetPointeeData(0, length).uint8s
     return '"' + bytes(arr).decode("utf-8", "replace") + '"'
 
@@ -196,7 +196,7 @@ class AKArraySyntheticProvider:
         if name.startswith("[") and name.endswith("]"):
             try:
                 return int(name[1:-1])
-            except:
+            except (ValueError, TypeError):
                 return -1
         return -1
 
@@ -399,7 +399,7 @@ class AKSinglyLinkedListSyntheticProvider:
         if name.startswith("[") and name.endswith("]"):
             try:
                 return int(name[1:-1])
-            except:
+            except (ValueError, TypeError):
                 return -1
         return -1
 
