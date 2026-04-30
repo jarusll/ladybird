@@ -425,6 +425,11 @@ class AKIntrusiveListSyntheticProvider:
             i += 1
         return None
 
+def ak_distinct_numeric_summary(valobj, internal_dict):
+    val = valobj.GetNonSyntheticValue()
+    m_value = val.GetChildMemberWithName("m_value")
+    return m_value.GetValue() or m_value.GetSummary()
+
 def __lldb_init_module(debugger, internal_dict):
     commands = [
         "command script add -f ak.connect pyconnect --overwrite",
@@ -449,6 +454,7 @@ def __lldb_init_module(debugger, internal_dict):
         "type summary add -x \"^AK::Variant(<.*>)?$\" -F ak.ak_variant_summary",
         "type synthetic add -x \"^AK::Array(<.*>)?$\" -l ak.AKArraySyntheticProvider",
         "type synthetic add -x \"^AK::IntrusiveList(<.*>)?$\" -l ak.AKIntrusiveListSyntheticProvider",
+        "type summary add -x \"^AK::DistinctNumeric(<.*>)?$\" -F ak.ak_distinct_numeric_summary",
     ]
 
     for cmd in commands:
