@@ -323,6 +323,18 @@ def ak_optional_summary(valobj, internal_dict):
     return "Some" if has_value.GetValueAsUnsigned() != 0 else "None"
 
 
+def ak_variant_summary(valobj, internal_dict):
+    valobj = valobj.GetNonSyntheticValue()
+
+    index = valobj.GetChildMemberWithName("m_index").GetValueAsUnsigned()
+    ty = valobj.GetType()
+    current_type = ty.GetTemplateArgumentType(index)
+
+    if current_type.IsValid():
+        return f"{current_type.GetName()}"
+    return "AK::Variant<?>"
+
+
 def __lldb_init_module(debugger, internal_dict):
     debugger.HandleCommand(
         "command script add -f ak.connect pyconnect --overwrite"
@@ -380,4 +392,7 @@ def __lldb_init_module(debugger, internal_dict):
     )
     debugger.HandleCommand(
         "type summary add -x \"^AK::Optional(<.*>)?$\" -F ak.ak_optional_summary"
+    )
+    debugger.HandleCommand(
+        "type summary add -x \"^AK::Variant(<.*>)?$\" -F ak.ak_variant_summary"
     )
