@@ -7,16 +7,9 @@ def connect(debugger, command, result, internal_dict):
     debugpy.wait_for_client()
     print("Debugger attached.")
 
-
-def ak_string_impl_summary(valobj, internal_dict):
-    length = valobj.GetChildMemberWithName("m_length").GetValueAsUnsigned()
-    if length == 0:
-        return '""'
-
-    data = valobj.GetChildMemberWithName("m_inline_buffer")
-    arr = data.GetPointeeData(0, length).uint8s
-    return bytes(arr).decode("utf-8", "replace")
-
+def ak_atomic_summary(valobj, internal_dict):
+    value = valobj.GetChildMemberWithName("m_value")
+    return value.GetSummary() or value.GetValueAsUnsigned()
 
 def ak_bytestring_summary(valobj, internal_dict):
     impl_ptr = valobj.GetChildMemberWithName("m_impl") \
@@ -28,17 +21,106 @@ def ak_bytestring_summary(valobj, internal_dict):
     impl = impl_ptr.Dereference()
     return ak_string_impl_summary(impl, internal_dict)
 
-
-def ak_stringview_summary(valobj, internal_dict):
+def ak_string_impl_summary(valobj, internal_dict):
     length = valobj.GetChildMemberWithName("m_length").GetValueAsUnsigned()
     if length == 0:
         return '""'
 
-    characters = valobj.GetChildMemberWithName("m_characters")
-    addr = characters.GetValueAsUnsigned()
-    arr = characters.GetPointeeData(0, length).uint8s
-    return '"' + bytes(arr).decode("utf-8", "replace") + '"'
+    data = valobj.GetChildMemberWithName("m_inline_buffer")
+    arr = data.GetPointeeData(0, length).uint8s
+    return bytes(arr).decode("utf-8", "replace")
 
+def ak_distinct_numeric_summary(valobj, internal_dict):
+    val = valobj.GetNonSyntheticValue()
+    m_value = val.GetChildMemberWithName("m_value")
+    return m_value.GetValue() or m_value.GetSummary()
+
+def ak_fixedarray_summary(valobj, internal_dict):
+    valobj = valobj.GetNonSyntheticValue()
+    size = valobj.GetChildMemberWithName("m_size").GetValueAsUnsigned()
+    return f"size={size}"
+
+def ak_hashmap_summary(valobj, internal_dict):
+    valobj = valobj.GetNonSyntheticValue()
+    table = valobj.GetChildMemberWithName("m_table")
+    size = table.GetChildMemberWithName("m_size").GetValueAsUnsigned()
+    return f"size={size}"
+
+def ak_nonnullrefptr_summary(valobj, internal_dict):
+    valobj = valobj.GetNonSyntheticValue()
+    m_ptr = valobj.GetChildMemberWithName("m_ptr")
+    ptr_value = m_ptr.GetValueAsUnsigned()
+
+    if ptr_value == 0:
+        return "nullptr"
+
+    pointee = m_ptr.Dereference()
+    if pointee.IsValid():
+        ref_count = pointee.GetChildMemberWithName("m_ref_count")
+        if ref_count.IsValid():
+            ref_count_val = ref_count.GetValueAsUnsigned()
+            return f"{hex(ptr_value)} (ref_count={ref_count_val})"
+        return hex(ptr_value)
+    return hex(ptr_value)
+
+def ak_optional_summary(valobj, internal_dict):
+    valobj = valobj.GetNonSyntheticValue()
+    stream = lldb.SBStream()
+    if not valobj.GetExpressionPath(stream):
+        return None
+
+    frame = valobj.GetFrame()
+    if not frame.IsValid():
+        return None
+
+    has_value = frame.EvaluateExpression(
+        f"{stream.GetData()}.has_value()"
+    )
+    return "Some" if has_value.GetValueAsUnsigned() != 0 else "None"
+
+def ak_ownptr_summary(valobj, internal_dict):
+    m_ptr = valobj.GetChildMemberWithName("m_ptr")
+    ptr_value = m_ptr.GetValueAsUnsigned()
+
+    if ptr_value == 0:
+        return "nullptr"
+
+    return hex(ptr_value)
+
+def ak_refcounted_summary(valobj, internal_dict):
+    value = valobj.GetChildMemberWithName("m_ref_count")
+    return value.GetSummary() or value.GetValue()
+
+def ak_refptr_summary(valobj, internal_dict):
+    m_ptr = valobj.GetChildMemberWithName("m_ptr")
+    ptr_value = m_ptr.GetValueAsUnsigned()
+
+    if ptr_value == 0:
+        return "nullptr"
+
+    pointee = m_ptr.Dereference()
+    if pointee.IsValid():
+        ref_count = pointee.GetChildMemberWithName("m_ref_count")
+        if ref_count.IsValid():
+            ref_count_val = ref_count.GetValueAsUnsigned()
+            return f"(ref_count={ref_count_val}) {hex(ptr_value)}"
+        return hex(ptr_value)
+    return hex(ptr_value)
+
+def ak_singlylinkedlist_summary(valobj, internal_dict):
+    valobj = valobj.GetNonSyntheticValue()
+    m_head = valobj.GetChildMemberWithName("m_head")
+
+    size = 0
+    node = m_head
+    while node.GetValueAsUnsigned() != 0:
+        size += 1
+        next_ptr = node.Dereference().GetChildMemberWithName("next")
+        node = next_ptr
+        if size > 10000:
+            break
+
+    return f"size={size}"
 
 def ak_string_summary(valobj, internal_dict):
     stream = lldb.SBStream()
@@ -57,29 +139,76 @@ def ak_string_summary(valobj, internal_dict):
 
     return ak_stringview_summary(string_view, internal_dict)
 
+def ak_stringview_summary(valobj, internal_dict):
+    length = valobj.GetChildMemberWithName("m_length").GetValueAsUnsigned()
+    if length == 0:
+        return '""'
 
-def ak_atomic_summary(valobj, internal_dict):
-    value = valobj.GetChildMemberWithName("m_value")
-    return value.GetSummary() or value.GetValueAsUnsigned()
+    characters = valobj.GetChildMemberWithName("m_characters")
+    addr = characters.GetValueAsUnsigned()
+    arr = characters.GetPointeeData(0, length).uint8s
+    return '"' + bytes(arr).decode("utf-8", "replace") + '"'
 
-
-def ak_refcounted_summary(valobj, internal_dict):
-    value = valobj.GetChildMemberWithName("m_ref_count")
-    return value.GetSummary() or value.GetValue()
-
-
-def ak_fixedarray_summary(valobj, internal_dict):
+def ak_variant_summary(valobj, internal_dict):
     valobj = valobj.GetNonSyntheticValue()
-    size = valobj.GetChildMemberWithName("m_size").GetValueAsUnsigned()
+
+    index = valobj.GetChildMemberWithName("m_index").GetValueAsUnsigned()
+    ty = valobj.GetType()
+    current_type = ty.GetTemplateArgumentType(index)
+
+    if current_type.IsValid():
+        return f"{current_type.GetName()}"
+    return "AK::Variant<?>"
+
+def ak_vector_summary(valobj, internal_dict):
+    valobj = valobj.GetNonSyntheticValue()
+    m_size = valobj.GetChildMemberWithName("m_size")
+    size = m_size.GetValueAsUnsigned()
     return f"size={size}"
 
+class AKArraySyntheticProvider:
+    def __init__(self, valobj, internal_dict):
+        self.valobj = valobj.GetNonSyntheticValue()
+        self.update()
 
-def ak_hashmap_summary(valobj, internal_dict):
-    valobj = valobj.GetNonSyntheticValue()
-    table = valobj.GetChildMemberWithName("m_table")
-    size = table.GetChildMemberWithName("m_size").GetValueAsUnsigned()
-    return f"size={size}"
+    def update(self):
+        valType = self.valobj.GetType()
+        self.elem_type = valType.GetTemplateArgumentType(0)
+        self.size = valType.GetTemplateArgumentValue(self.valobj.GetTarget(), 1).GetValueAsUnsigned()
 
+        if self.size == 0:
+            self.data_ptr = None
+            return
+
+        data = self.valobj.GetChildMemberWithName("__data")
+        self.data_ptr = data.AddressOf().Cast(
+            self.elem_type.GetPointerType()
+        )
+        self.elem_size = self.elem_type.GetByteSize()
+
+    def has_children(self):
+        return self.size > 0
+
+    def num_children(self):
+        return self.size
+
+    def get_child_index(self, name):
+        if name.startswith("[") and name.endswith("]"):
+            try:
+                return int(name[1:-1])
+            except:
+                return -1
+        return -1
+
+    def get_child_at_index(self, index):
+        if index < 0 or index >= self.size or self.data_ptr is None:
+            return None
+
+        return self.data_ptr.CreateChildAtOffset(
+            f"[{index}]",
+            index * self.elem_size,
+            self.elem_type
+        )
 
 class AKFixedArraySynthProvider:
     def __init__(self, valobj, internal_dict):
@@ -188,72 +317,52 @@ class AKHashMapSynthProvider:
 
         return val.Clone(f"[{key_str}]")
 
-def ak_refptr_summary(valobj, internal_dict):
-    m_ptr = valobj.GetChildMemberWithName("m_ptr")
-    ptr_value = m_ptr.GetValueAsUnsigned()
+class AKIntrusiveListSyntheticProvider:
+    def __init__(self, valobj, internal_dict):
+        self.valobj = valobj
+        self.update()
 
-    if ptr_value == 0:
-        return "nullptr"
+    def update(self):
+        self.val = self.valobj.GetNonSyntheticValue()
+        t = self.val.GetType()
+        self.element_type = t.GetTemplateArgumentType(0)
 
-    pointee = m_ptr.Dereference()
-    if pointee.IsValid():
-        ref_count = pointee.GetChildMemberWithName("m_ref_count")
-        if ref_count.IsValid():
-            ref_count_val = ref_count.GetValueAsUnsigned()
-            return f"(ref_count={ref_count_val}) {hex(ptr_value)}"
-        return hex(ptr_value)
-    return hex(ptr_value)
+        self.node_member_offset = 0
+        for i in range(self.element_type.GetNumberOfFields()):
+            field = self.element_type.GetFieldAtIndex(i)
+            if "IntrusiveListNode" in field.GetType().GetName():
+                self.node_member_offset = field.GetOffsetInBytes()
+                break
 
+        self.first = self.val.GetChildMemberWithName("m_storage") \
+                             .GetChildMemberWithName("m_first")
 
-def ak_ownptr_summary(valobj, internal_dict):
-    m_ptr = valobj.GetChildMemberWithName("m_ptr")
-    ptr_value = m_ptr.GetValueAsUnsigned()
+    def _node_to_value(self, node):
+        addr = node.GetValueAsUnsigned() - self.node_member_offset
+        return self.val.CreateValueFromAddress(
+            None,
+            addr,
+            self.element_type
+        )
 
-    if ptr_value == 0:
-        return "nullptr"
+    def num_children(self):
+        count = 0
+        current = self.first
+        while current.GetValueAsUnsigned() != 0:
+            count += 1
+            current = current.GetChildMemberWithName("m_next")
+        return count
 
-    return hex(ptr_value)
-
-
-def ak_nonnullrefptr_summary(valobj, internal_dict):
-    valobj = valobj.GetNonSyntheticValue()
-    m_ptr = valobj.GetChildMemberWithName("m_ptr")
-    ptr_value = m_ptr.GetValueAsUnsigned()
-
-    if ptr_value == 0:
-        return "nullptr"
-
-    pointee = m_ptr.Dereference()
-    if pointee.IsValid():
-        ref_count = pointee.GetChildMemberWithName("m_ref_count")
-        if ref_count.IsValid():
-            ref_count_val = ref_count.GetValueAsUnsigned()
-            return f"{hex(ptr_value)} (ref_count={ref_count_val})"
-        return hex(ptr_value)
-    return hex(ptr_value)
-
-
-def ak_singlylinkedlist_summary(valobj, internal_dict):
-    valobj = valobj.GetNonSyntheticValue()
-    m_head = valobj.GetChildMemberWithName("m_head")
-
-    size = 0
-    node = m_head
-    while node.GetValueAsUnsigned() != 0:
-        size += 1
-        next_ptr = node.Dereference().GetChildMemberWithName("next")
-        node = next_ptr
-        if size > 10000:
-            break
-
-    return f"size={size}"
-
-
-def ak_vector_summary(valobj, internal_dict):
-    valobj = valobj.GetNonSyntheticValue()
-    m_size = valobj.GetChildMemberWithName("m_size")
-    size = m_size.GetValueAsUnsigned()
-    return f"size={size}"
+    def get_child_at_index(self, index):
+        current = self.first
+        i = 0
+        while current.GetValueAsUnsigned() != 0:
+            if i == index:
+                val = self._node_to_value(current)
+                return val.Clone(f"[{i}]")
+            current = current.GetChildMemberWithName("m_next")
+            i += 1
+        return None
 
 
 class AKVectorSynthProvider:
@@ -306,129 +415,6 @@ class AKVectorSynthProvider:
         )
 
 
-
-def ak_optional_summary(valobj, internal_dict):
-    valobj = valobj.GetNonSyntheticValue()
-    stream = lldb.SBStream()
-    if not valobj.GetExpressionPath(stream):
-        return None
-
-    frame = valobj.GetFrame()
-    if not frame.IsValid():
-        return None
-
-    has_value = frame.EvaluateExpression(
-        f"{stream.GetData()}.has_value()"
-    )
-    return "Some" if has_value.GetValueAsUnsigned() != 0 else "None"
-
-
-def ak_variant_summary(valobj, internal_dict):
-    valobj = valobj.GetNonSyntheticValue()
-
-    index = valobj.GetChildMemberWithName("m_index").GetValueAsUnsigned()
-    ty = valobj.GetType()
-    current_type = ty.GetTemplateArgumentType(index)
-
-    if current_type.IsValid():
-        return f"{current_type.GetName()}"
-    return "AK::Variant<?>"
-
-class AKArraySyntheticProvider:
-    def __init__(self, valobj, internal_dict):
-        self.valobj = valobj.GetNonSyntheticValue()
-        self.update()
-
-    def update(self):
-        valType = self.valobj.GetType()
-        self.elem_type = valType.GetTemplateArgumentType(0)
-        self.size = valType.GetTemplateArgumentValue(self.valobj.GetTarget(), 1).GetValueAsUnsigned()
-
-        if self.size == 0:
-            self.data_ptr = None
-            return
-
-        data = self.valobj.GetChildMemberWithName("__data")
-        self.data_ptr = data.AddressOf().Cast(
-            self.elem_type.GetPointerType()
-        )
-        self.elem_size = self.elem_type.GetByteSize()
-
-    def has_children(self):
-        return self.size > 0
-
-    def num_children(self):
-        return self.size
-
-    def get_child_index(self, name):
-        if name.startswith("[") and name.endswith("]"):
-            try:
-                return int(name[1:-1])
-            except:
-                return -1
-        return -1
-
-    def get_child_at_index(self, index):
-        if index < 0 or index >= self.size or self.data_ptr is None:
-            return None
-
-        return self.data_ptr.CreateChildAtOffset(
-            f"[{index}]",
-            index * self.elem_size,
-            self.elem_type
-        )
-
-class AKIntrusiveListSyntheticProvider:
-    def __init__(self, valobj, internal_dict):
-        self.valobj = valobj
-        self.update()
-
-    def update(self):
-        self.val = self.valobj.GetNonSyntheticValue()
-        t = self.val.GetType()
-        self.element_type = t.GetTemplateArgumentType(0)
-
-        self.node_member_offset = 0
-        for i in range(self.element_type.GetNumberOfFields()):
-            field = self.element_type.GetFieldAtIndex(i)
-            if "IntrusiveListNode" in field.GetType().GetName():
-                self.node_member_offset = field.GetOffsetInBytes()
-                break
-
-        self.first = self.val.GetChildMemberWithName("m_storage") \
-                             .GetChildMemberWithName("m_first")
-
-    def _node_to_value(self, node):
-        addr = node.GetValueAsUnsigned() - self.node_member_offset
-        return self.val.CreateValueFromAddress(
-            None,
-            addr,
-            self.element_type
-        )
-
-    def num_children(self):
-        count = 0
-        current = self.first
-        while current.GetValueAsUnsigned() != 0:
-            count += 1
-            current = current.GetChildMemberWithName("m_next")
-        return count
-
-    def get_child_at_index(self, index):
-        current = self.first
-        i = 0
-        while current.GetValueAsUnsigned() != 0:
-            if i == index:
-                val = self._node_to_value(current)
-                return val.Clone(f"[{i}]")
-            current = current.GetChildMemberWithName("m_next")
-            i += 1
-        return None
-
-def ak_distinct_numeric_summary(valobj, internal_dict):
-    val = valobj.GetNonSyntheticValue()
-    m_value = val.GetChildMemberWithName("m_value")
-    return m_value.GetValue() or m_value.GetSummary()
 
 def __lldb_init_module(debugger, internal_dict):
     commands = [
