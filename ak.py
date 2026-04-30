@@ -1,26 +1,20 @@
-import debugpy
 import lldb
 
-
-def connect(debugger, command, result, internal_dict):
-    debugpy.listen(("localhost", 5678))
-    print("Waiting for debugger to attach...")
-    debugpy.wait_for_client()
-    print("Debugger attached.")
 
 def ak_atomic_summary(valobj, internal_dict):
     value = valobj.GetChildMemberWithName("m_value")
     return value.GetSummary() or value.GetValueAsUnsigned()
 
+
 def ak_bytestring_summary(valobj, internal_dict):
-    impl_ptr = valobj.GetChildMemberWithName("m_impl") \
-        .GetChildMemberWithName("m_ptr")
+    impl_ptr = valobj.GetChildMemberWithName("m_impl").GetChildMemberWithName("m_ptr")
 
     if impl_ptr.GetValueAsUnsigned() == 0:
         return '""'
 
     impl = impl_ptr.Dereference()
     return ak_string_impl_summary(impl, internal_dict)
+
 
 def ak_string_impl_summary(valobj, internal_dict):
     length = valobj.GetChildMemberWithName("m_length").GetValueAsUnsigned()
@@ -31,21 +25,25 @@ def ak_string_impl_summary(valobj, internal_dict):
     arr = data.GetPointeeData(0, length).uint8s
     return bytes(arr).decode("utf-8", "replace")
 
+
 def ak_distinct_numeric_summary(valobj, internal_dict):
     val = valobj.GetNonSyntheticValue()
     m_value = val.GetChildMemberWithName("m_value")
     return m_value.GetValue() or m_value.GetSummary()
+
 
 def ak_fixedarray_summary(valobj, internal_dict):
     valobj = valobj.GetNonSyntheticValue()
     size = valobj.GetChildMemberWithName("m_size").GetValueAsUnsigned()
     return f"size={size}"
 
+
 def ak_hashmap_summary(valobj, internal_dict):
     valobj = valobj.GetNonSyntheticValue()
     table = valobj.GetChildMemberWithName("m_table")
     size = table.GetChildMemberWithName("m_size").GetValueAsUnsigned()
     return f"size={size}"
+
 
 def ak_nonnullrefptr_summary(valobj, internal_dict):
     valobj = valobj.GetNonSyntheticValue()
@@ -64,6 +62,7 @@ def ak_nonnullrefptr_summary(valobj, internal_dict):
         return hex(ptr_value)
     return hex(ptr_value)
 
+
 def ak_optional_summary(valobj, internal_dict):
     valobj = valobj.GetNonSyntheticValue()
     stream = lldb.SBStream()
@@ -74,10 +73,9 @@ def ak_optional_summary(valobj, internal_dict):
     if not frame.IsValid():
         return None
 
-    has_value = frame.EvaluateExpression(
-        f"{stream.GetData()}.has_value()"
-    )
+    has_value = frame.EvaluateExpression(f"{stream.GetData()}.has_value()")
     return "Some" if has_value.GetValueAsUnsigned() != 0 else "None"
+
 
 def ak_ownptr_summary(valobj, internal_dict):
     m_ptr = valobj.GetChildMemberWithName("m_ptr")
@@ -88,9 +86,11 @@ def ak_ownptr_summary(valobj, internal_dict):
 
     return hex(ptr_value)
 
+
 def ak_refcounted_summary(valobj, internal_dict):
     value = valobj.GetChildMemberWithName("m_ref_count")
     return value.GetSummary() or value.GetValue()
+
 
 def ak_refptr_summary(valobj, internal_dict):
     m_ptr = valobj.GetChildMemberWithName("m_ptr")
@@ -108,6 +108,7 @@ def ak_refptr_summary(valobj, internal_dict):
         return hex(ptr_value)
     return hex(ptr_value)
 
+
 def ak_singlylinkedlist_summary(valobj, internal_dict):
     valobj = valobj.GetNonSyntheticValue()
     m_head = valobj.GetChildMemberWithName("m_head")
@@ -123,6 +124,7 @@ def ak_singlylinkedlist_summary(valobj, internal_dict):
 
     return f"size={size}"
 
+
 def ak_string_summary(valobj, internal_dict):
     stream = lldb.SBStream()
     if not valobj.GetExpressionPath(stream):
@@ -132,13 +134,12 @@ def ak_string_summary(valobj, internal_dict):
     if not frame.IsValid():
         return None
 
-    string_view = frame.EvaluateExpression(
-        f"{stream.GetData()}.bytes_as_string_view()"
-    )
+    string_view = frame.EvaluateExpression(f"{stream.GetData()}.bytes_as_string_view()")
     if not string_view.IsValid() or string_view.GetError().Fail():
         return None
 
     return ak_stringview_summary(string_view, internal_dict)
+
 
 def ak_stringview_summary(valobj, internal_dict):
     length = valobj.GetChildMemberWithName("m_length").GetValueAsUnsigned()
@@ -148,6 +149,7 @@ def ak_stringview_summary(valobj, internal_dict):
     characters = valobj.GetChildMemberWithName("m_characters")
     arr = characters.GetPointeeData(0, length).uint8s
     return '"' + bytes(arr).decode("utf-8", "replace") + '"'
+
 
 def ak_variant_summary(valobj, internal_dict):
     valobj = valobj.GetNonSyntheticValue()
@@ -160,11 +162,13 @@ def ak_variant_summary(valobj, internal_dict):
         return f"{current_type.GetName()}"
     return "AK::Variant<?>"
 
+
 def ak_vector_summary(valobj, internal_dict):
     valobj = valobj.GetNonSyntheticValue()
     m_size = valobj.GetChildMemberWithName("m_size")
     size = m_size.GetValueAsUnsigned()
     return f"size={size}"
+
 
 class AKArraySyntheticProvider:
     def __init__(self, valobj, internal_dict):
@@ -181,9 +185,7 @@ class AKArraySyntheticProvider:
             return
 
         data = self.valobj.GetChildMemberWithName("__data")
-        self.data_ptr = data.AddressOf().Cast(
-            self.elem_type.GetPointerType()
-        )
+        self.data_ptr = data.AddressOf().Cast(self.elem_type.GetPointerType())
         self.elem_size = self.elem_type.GetByteSize()
 
     def has_children(self):
@@ -204,11 +206,8 @@ class AKArraySyntheticProvider:
         if index < 0 or index >= self.size or self.data_ptr is None:
             return None
 
-        return self.data_ptr.CreateChildAtOffset(
-            f"[{index}]",
-            index * self.elem_size,
-            self.elem_type
-        )
+        return self.data_ptr.CreateChildAtOffset(f"[{index}]", index * self.elem_size, self.elem_type)
+
 
 class AKFixedArraySynthProvider:
     def __init__(self, valobj, internal_dict):
@@ -317,6 +316,7 @@ class AKHashMapSynthProvider:
 
         return val.Clone(f"[{key_str}]")
 
+
 class AKIntrusiveListSyntheticProvider:
     def __init__(self, valobj, internal_dict):
         self.valobj = valobj
@@ -334,16 +334,11 @@ class AKIntrusiveListSyntheticProvider:
                 self.node_member_offset = field.GetOffsetInBytes()
                 break
 
-        self.first = self.val.GetChildMemberWithName("m_storage") \
-                             .GetChildMemberWithName("m_first")
+        self.first = self.val.GetChildMemberWithName("m_storage").GetChildMemberWithName("m_first")
 
     def _node_to_value(self, node):
         addr = node.GetValueAsUnsigned() - self.node_member_offset
-        return self.val.CreateValueFromAddress(
-            None,
-            addr,
-            self.element_type
-        )
+        return self.val.CreateValueFromAddress(None, addr, self.element_type)
 
     def num_children(self):
         count = 0
@@ -363,6 +358,7 @@ class AKIntrusiveListSyntheticProvider:
             current = current.GetChildMemberWithName("m_next")
             i += 1
         return None
+
 
 class AKSinglyLinkedListSyntheticProvider:
     def __init__(self, valobj, internal_dict):
@@ -403,6 +399,7 @@ class AKSinglyLinkedListSyntheticProvider:
                 return -1
         return -1
 
+
 class AKVariantSyntheticProvider:
     def __init__(self, valobj, internal_dict):
         self.valobj = valobj
@@ -431,16 +428,13 @@ class AKVariantSyntheticProvider:
 
         data_addr = self.data.GetAddress().GetLoadAddress(self.val.GetTarget())
 
-        value = self.val.CreateValueFromAddress(
-            "value",
-            data_addr,
-            self.active_type
-        )
+        value = self.val.CreateValueFromAddress("value", data_addr, self.active_type)
 
         return value.Clone("value")
 
     def get_child_index(self, name):
         return 0 if name == "value" else -1
+
 
 class AKVectorSynthProvider:
     def __init__(self, valobj, internal_dict):
@@ -492,34 +486,33 @@ class AKVectorSynthProvider:
         )
 
 
-
 def __lldb_init_module(debugger, internal_dict):
     commands = [
         "command script add -f ak.connect pyconnect --overwrite",
-        "type synthetic add -x \"^AK::Array(<.*>)?$\" -l ak.AKArraySyntheticProvider",
-        "type summary add -x \"^AK::Atomic(<.*>)?$\" -F ak.ak_atomic_summary",
-        "type summary add -x \"^AK::ByteString(<.*>)?$\" -F ak.ak_bytestring_summary",
-        "type summary add -x \"^AK::ByteStringImpl(<.*>)?$\" -F ak.ak_string_impl_summary",
-        "type summary add -x \"^AK::DistinctNumeric(<.*>)?$\" -F ak.ak_distinct_numeric_summary",
-        "type summary add -x \"^AK::FixedArray(<.*>)?$\" -F ak.ak_fixedarray_summary",
-        "type synthetic add -x \"^AK::FixedArray(<.*>)?$\" -l ak.AKFixedArraySynthProvider",
-        "type summary add -x \"^AK::HashMap(<.*>)?$\" -F ak.ak_hashmap_summary",
-        "type synthetic add -x \"^AK::HashMap(<.*>)?$\" -l ak.AKHashMapSynthProvider",
-        "type synthetic add -x \"^AK::IntrusiveList(<.*>)?$\" -l ak.AKIntrusiveListSyntheticProvider",
-        "type summary add -x \"^AK::NonnullRefPtr(<.*>)?$\" -F ak.ak_nonnullrefptr_summary",
-        "type summary add -x \"^AK::Optional(<.*>)?$\" -F ak.ak_optional_summary",
-        "type summary add -x \"^AK::OwnPtr(<.*>)?$\" -F ak.ak_ownptr_summary",
-        "type summary add -x \"^AK::RefCounted(<.*>)?$\" -F ak.ak_refcounted_summary",
-        "type summary add -x \"^AK::RefPtr(<.*>)?$\" -F ak.ak_refptr_summary",
-        "type summary add -x \"^AK::SinglyLinkedList(<.*>)?$\" -F ak.ak_singlylinkedlist_summary",
-        "type synthetic add -x \"^AK::SinglyLinkedList(<.*>)?$\" -l ak.AKSinglyLinkedListSynthProvider",
-        "type summary add -x \"^AK::String(<.*>)?$\" -F ak.ak_string_summary",
-        "type summary add -x \"^AK::StringView(<.*>)?$\" -F ak.ak_stringview_summary",
-        "type summary add -x \"^AK::Variant(<.*>)?$\" -F ak.ak_variant_summary",
-        "type summary add -x \"^AK::Vector(<.*>)?$\" -F ak.ak_vector_summary",
-        "type synthetic add -x \"^AK::Variant(<.*>)?$\" -l ak.AKVariantSyntheticProvider",
-        "type synthetic add -x \"^AK::Vector(<.*>)?$\" -l ak.AKVectorSynthProvider",
-        "type synthetic add -x \"^AK::SinglyLinkedList(<.*>)?$\" -l ak.AKSinglyLinkedListSyntheticProvider",
+        'type synthetic add -x "^AK::Array(<.*>)?$" -l ak.AKArraySyntheticProvider',
+        'type summary add -x "^AK::Atomic(<.*>)?$" -F ak.ak_atomic_summary',
+        'type summary add -x "^AK::ByteString(<.*>)?$" -F ak.ak_bytestring_summary',
+        'type summary add -x "^AK::ByteStringImpl(<.*>)?$" -F ak.ak_string_impl_summary',
+        'type summary add -x "^AK::DistinctNumeric(<.*>)?$" -F ak.ak_distinct_numeric_summary',
+        'type summary add -x "^AK::FixedArray(<.*>)?$" -F ak.ak_fixedarray_summary',
+        'type synthetic add -x "^AK::FixedArray(<.*>)?$" -l ak.AKFixedArraySynthProvider',
+        'type summary add -x "^AK::HashMap(<.*>)?$" -F ak.ak_hashmap_summary',
+        'type synthetic add -x "^AK::HashMap(<.*>)?$" -l ak.AKHashMapSynthProvider',
+        'type synthetic add -x "^AK::IntrusiveList(<.*>)?$" -l ak.AKIntrusiveListSyntheticProvider',
+        'type summary add -x "^AK::NonnullRefPtr(<.*>)?$" -F ak.ak_nonnullrefptr_summary',
+        'type summary add -x "^AK::Optional(<.*>)?$" -F ak.ak_optional_summary',
+        'type summary add -x "^AK::OwnPtr(<.*>)?$" -F ak.ak_ownptr_summary',
+        'type summary add -x "^AK::RefCounted(<.*>)?$" -F ak.ak_refcounted_summary',
+        'type summary add -x "^AK::RefPtr(<.*>)?$" -F ak.ak_refptr_summary',
+        'type summary add -x "^AK::SinglyLinkedList(<.*>)?$" -F ak.ak_singlylinkedlist_summary',
+        'type synthetic add -x "^AK::SinglyLinkedList(<.*>)?$" -l ak.AKSinglyLinkedListSynthProvider',
+        'type summary add -x "^AK::String(<.*>)?$" -F ak.ak_string_summary',
+        'type summary add -x "^AK::StringView(<.*>)?$" -F ak.ak_stringview_summary',
+        'type summary add -x "^AK::Variant(<.*>)?$" -F ak.ak_variant_summary',
+        'type summary add -x "^AK::Vector(<.*>)?$" -F ak.ak_vector_summary',
+        'type synthetic add -x "^AK::Variant(<.*>)?$" -l ak.AKVariantSyntheticProvider',
+        'type synthetic add -x "^AK::Vector(<.*>)?$" -l ak.AKVectorSynthProvider',
+        'type synthetic add -x "^AK::SinglyLinkedList(<.*>)?$" -l ak.AKSinglyLinkedListSyntheticProvider',
     ]
 
     for cmd in commands:
