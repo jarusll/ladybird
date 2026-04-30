@@ -488,7 +488,6 @@ class AKVectorSynthProvider:
 
 def __lldb_init_module(debugger, internal_dict):
     commands = [
-        "command script add -f ak.connect pyconnect --overwrite",
         'type synthetic add -x "^AK::Array(<.*>)?$" -l ak.AKArraySyntheticProvider',
         'type summary add -x "^AK::Atomic(<.*>)?$" -F ak.ak_atomic_summary',
         'type summary add -x "^AK::ByteString(<.*>)?$" -F ak.ak_bytestring_summary',
