@@ -8,16 +8,17 @@
 
 #include <AK/FlyString.h>
 #include <AK/HashMap.h>
+#include <AK/HashTable.h>
 #include <AK/NonnullRefPtr.h>
 #include <AK/Optional.h>
 #include <AK/RefCounted.h>
 #include <AK/RefPtr.h>
 #include <AK/Vector.h>
 #include <LibGC/Ptr.h>
-#include <LibGC/WeakHashSet.h>
 #include <LibWeb/Animations/KeyframeEffect.h>
 #include <LibWeb/CSS/CascadeOrigin.h>
 #include <LibWeb/CSS/CounterStyle.h>
+#include <LibWeb/CSS/InvalidationSet.h>
 #include <LibWeb/CSS/Selector.h>
 #include <LibWeb/CSS/StyleInvalidationData.h>
 #include <LibWeb/Forward.h>
@@ -94,6 +95,17 @@ struct StyleCache : public RefCounted<StyleCache> {
     void visit_edges(GC::Cell::Visitor&);
 };
 
+struct PendingHasInvalidationMutationFeatures {
+    bool is_conservative { false };
+    bool may_affect_sibling_relationships { false };
+    bool may_affect_pseudo_classes { false };
+    HashTable<FlyString> tag_names;
+    HashTable<FlyString> ids;
+    HashTable<FlyString> class_names;
+    HashTable<FlyString> attribute_names;
+    HashTable<PseudoClass> pseudo_classes;
+};
+
 class StyleScope {
 public:
     explicit StyleScope(GC::Ref<DOM::Node>);
@@ -130,13 +142,13 @@ public:
 
     void for_each_active_css_style_sheet(Function<void(CSS::CSSStyleSheet&)> const& callback) const;
 
-    void invalidate_style_of_elements_affected_by_has();
-
     void invalidate_counter_style_cache();
     void build_counter_style_cache();
     RefPtr<CSS::CounterStyle const> get_registered_counter_style(FlyString const& name) const;
 
-    void schedule_ancestors_style_invalidation_due_to_presence_of_has(DOM::Node& node);
+    void schedule_ancestors_style_invalidation_due_to_presence_of_has(GC::Ref<DOM::Node>);
+    void record_pending_has_invalidation_mutation_features(GC::Ref<DOM::Node>, GC::Ref<DOM::Node>, bool includes_descendants);
+    void record_pending_has_invalidation_mutation_features(GC::Ref<DOM::Node>, Vector<CSS::InvalidationSet::Property> const&);
 
     template<typename T>
     Optional<T> dereference_global_tree_scoped_reference(Function<Optional<T>(StyleScope const&)> const& callback) const;
@@ -147,7 +159,7 @@ public:
 
     GC::Ptr<CSSStyleSheet> m_user_style_sheet;
 
-    GC::WeakHashSet<DOM::Node> m_pending_nodes_for_style_invalidation_due_to_presence_of_has;
+    OrderedHashMap<GC::Ref<DOM::Node>, PendingHasInvalidationMutationFeatures> m_pending_has_invalidations;
 
     bool m_needs_counter_style_cache_update : 1 { true };
     bool m_is_doing_counter_style_cache_update : 1 { false };

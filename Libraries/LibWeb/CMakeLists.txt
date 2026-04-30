@@ -175,6 +175,24 @@ set(SOURCES
     CSS/Frequency.cpp
     CSS/GridTrackPlacement.cpp
     CSS/GridTrackSize.cpp
+    CSS/Invalidation/AdoptedStyleSheetInvalidator.cpp
+    CSS/Invalidation/AttributeInvalidator.cpp
+    CSS/Invalidation/CustomElementInvalidator.cpp
+    CSS/Invalidation/EmbeddedContentInvalidator.cpp
+    CSS/Invalidation/ElementStateInvalidator.cpp
+    CSS/Invalidation/FormControlInvalidator.cpp
+    CSS/Invalidation/HasMutationFeatureCollector.cpp
+    CSS/Invalidation/HasMutationInvalidator.cpp
+    CSS/Invalidation/InvalidationSetMatcher.cpp
+    CSS/Invalidation/LanguageInvalidator.cpp
+    CSS/Invalidation/LinkInvalidator.cpp
+    CSS/Invalidation/MediaQueryInvalidator.cpp
+    CSS/Invalidation/NodeInvalidator.cpp
+    CSS/Invalidation/PartInvalidator.cpp
+    CSS/Invalidation/PseudoClassInvalidator.cpp
+    CSS/Invalidation/SlotInvalidator.cpp
+    CSS/Invalidation/StyleInvalidator.cpp
+    CSS/Invalidation/StructuralMutationInvalidator.cpp
     CSS/Interpolation.cpp
     CSS/InvalidationSet.cpp
     CSS/Length.cpp
@@ -355,7 +373,6 @@ set(SOURCES
     DOM/StaticNodeList.cpp
     DOM/StaticRange.cpp
     DOM/StyleElementBase.cpp
-    DOM/StyleInvalidator.cpp
     DOM/Text.cpp
     DOM/TreeWalker.cpp
     DOM/Utils.cpp
@@ -370,6 +387,8 @@ set(SOURCES
     Editing/ExecCommand.cpp
     Editing/Internal/Algorithms.cpp
     Encoding/TextDecoder.cpp
+    Encoding/TextDecoderCommon.cpp
+    Encoding/TextDecoderStream.cpp
     Encoding/TextEncoder.cpp
     Encoding/TextEncoderCommon.cpp
     Encoding/TextEncoderStream.cpp
@@ -622,6 +641,7 @@ set(SOURCES
     HTML/Parser/HTMLParser.cpp
     HTML/Parser/HTMLToken.cpp
     HTML/Parser/HTMLTokenizer.cpp
+    HTML/Parser/IncrementalDocumentParser.cpp
     HTML/Parser/ListOfActiveFormattingElements.cpp
     HTML/Parser/SpeculativeHTMLParser.cpp
     HTML/Parser/SpeculativeMockElement.cpp
@@ -1185,9 +1205,9 @@ set(SOURCES
 compile_ipc(Worker/WebWorkerClient.ipc Worker/WebWorkerClientEndpoint.h)
 compile_ipc(Worker/WebWorkerServer.ipc Worker/WebWorkerServerEndpoint.h)
 
-invoke_cpp_generator(
+invoke_py_generator(
     "AriaRoles.cpp"
-    Lagom::GenerateAriaRoles
+    generate_libweb_aria_roles.py
     "${CMAKE_CURRENT_SOURCE_DIR}/ARIA/AriaRoles.json"
     "ARIA/AriaRoles.h"
     "ARIA/AriaRoles.cpp"
@@ -1211,6 +1231,7 @@ set(GENERATED_SOURCES
     CSS/Keyword.cpp
     CSS/MathFunctions.cpp
     CSS/MediaFeatureID.cpp
+    CSS/Parser/GeneratedValueTypesParsing.cpp
     CSS/PropertyID.cpp
     CSS/PseudoClass.cpp
     CSS/PseudoElement.cpp

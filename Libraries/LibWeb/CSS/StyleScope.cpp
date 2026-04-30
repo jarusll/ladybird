@@ -22,6 +22,7 @@
 #include <LibWeb/CSS/StyleScope.h>
 #include <LibWeb/CSS/StyleValues/StyleValueList.h>
 #include <LibWeb/DOM/Document.h>
+#include <LibWeb/Namespace.h>
 #include <LibWeb/Page/Page.h>
 
 namespace Web::CSS {
@@ -65,6 +66,7 @@ void StyleScope::visit_edges(GC::Cell::Visitor& visitor)
     visitor.visit(m_user_style_sheet);
     if (m_rule_cache)
         m_rule_cache->visit_edges(visitor);
+    visitor.visit(m_pending_has_invalidations);
 }
 
 void MatchingRule::visit_edges(GC::Cell::Visitor& visitor)
@@ -137,6 +139,7 @@ void StyleScope::populate_rule_cache(StyleCache& style_cache)
     style_cache.pseudo_class_rule_cache[to_underlying(PseudoClass::Focus)] = make<RuleCache>();
     style_cache.pseudo_class_rule_cache[to_underlying(PseudoClass::FocusWithin)] = make<RuleCache>();
     style_cache.pseudo_class_rule_cache[to_underlying(PseudoClass::FocusVisible)] = make<RuleCache>();
+    style_cache.pseudo_class_rule_cache[to_underlying(PseudoClass::Has)] = make<RuleCache>();
     style_cache.pseudo_class_rule_cache[to_underlying(PseudoClass::Target)] = make<RuleCache>();
 
     make_rule_cache_for_cascade_origin(CascadeOrigin::Author, style_cache);
@@ -841,96 +844,129 @@ void StyleScope::for_each_active_css_style_sheet(Function<void(CSS::CSSStyleShee
     }
 }
 
-void StyleScope::schedule_ancestors_style_invalidation_due_to_presence_of_has(DOM::Node& node)
+void StyleScope::schedule_ancestors_style_invalidation_due_to_presence_of_has(GC::Ref<DOM::Node> node)
 {
-    m_pending_nodes_for_style_invalidation_due_to_presence_of_has.set(node);
+    auto previous_size = m_pending_has_invalidations.size();
+    auto& mutation_features = m_pending_has_invalidations.ensure(node);
+    if (m_pending_has_invalidations.size() == previous_size)
+        return;
+    mutation_features.is_conservative = true;
     document().set_needs_invalidation_of_elements_affected_by_has();
 }
 
-void StyleScope::invalidate_style_of_elements_affected_by_has()
+static void merge_pending_has_invalidation_mutation_features(PendingHasInvalidationMutationFeatures& target, PendingHasInvalidationMutationFeatures const& source)
 {
-    if (m_pending_nodes_for_style_invalidation_due_to_presence_of_has.is_empty()) {
+    target.is_conservative |= source.is_conservative;
+    target.may_affect_sibling_relationships |= source.may_affect_sibling_relationships;
+    target.may_affect_pseudo_classes |= source.may_affect_pseudo_classes;
+    for (auto const& tag_name : source.tag_names)
+        target.tag_names.set(tag_name);
+    for (auto const& id : source.ids)
+        target.ids.set(id);
+    for (auto const& class_name : source.class_names)
+        target.class_names.set(class_name);
+    for (auto const& attribute_name : source.attribute_names)
+        target.attribute_names.set(attribute_name);
+    for (auto const& pseudo_class : source.pseudo_classes)
+        target.pseudo_classes.set(pseudo_class);
+}
+
+static void collect_pending_has_invalidation_features_from_element(PendingHasInvalidationMutationFeatures& features, DOM::Element const& element)
+{
+    features.tag_names.set(element.local_name());
+    if (element.namespace_uri() != Namespace::HTML)
+        features.tag_names.set(element.lowercased_local_name());
+
+    if (auto id = element.id(); id.has_value())
+        features.ids.set(*id);
+
+    for (auto const& class_name : element.class_names())
+        features.class_names.set(class_name);
+
+    element.for_each_attribute([&](FlyString const& name, String const&) {
+        features.attribute_names.set(name);
+        if (element.namespace_uri() != Namespace::HTML)
+            features.attribute_names.set(name.to_ascii_lowercase());
+    });
+}
+
+static PendingHasInvalidationMutationFeatures collect_pending_has_invalidation_mutation_features(DOM::Node& mutation_root, bool includes_descendants)
+{
+    PendingHasInvalidationMutationFeatures features;
+    features.may_affect_sibling_relationships = includes_descendants;
+    features.may_affect_pseudo_classes = true;
+    auto collect_node = [&](DOM::Node& node) {
+        if (node.is_character_data())
+            return;
+        if (auto* element = as_if<DOM::Element>(node))
+            collect_pending_has_invalidation_features_from_element(features, *element);
+    };
+
+    if (!includes_descendants) {
+        collect_node(mutation_root);
+        return features;
+    }
+
+    mutation_root.for_each_in_inclusive_subtree([&](DOM::Node& node) {
+        collect_node(node);
+        return TraversalDecision::Continue;
+    });
+    return features;
+}
+
+static PendingHasInvalidationMutationFeatures collect_pending_has_invalidation_mutation_features(Vector<CSS::InvalidationSet::Property> const& properties)
+{
+    PendingHasInvalidationMutationFeatures features;
+    for (auto const& property : properties) {
+        switch (property.type) {
+        case InvalidationSet::Property::Type::Class:
+            features.class_names.set(property.name());
+            break;
+        case InvalidationSet::Property::Type::Id:
+            features.ids.set(property.name());
+            break;
+        case InvalidationSet::Property::Type::TagName:
+            features.tag_names.set(property.name());
+            break;
+        case InvalidationSet::Property::Type::Attribute:
+            features.attribute_names.set(property.name());
+            break;
+        case InvalidationSet::Property::Type::InvalidateSelf:
+        case InvalidationSet::Property::Type::InvalidateWholeSubtree:
+            features.is_conservative = true;
+            break;
+        case InvalidationSet::Property::Type::PseudoClass:
+            features.pseudo_classes.set(property.value.get<PseudoClass>());
+            break;
+        }
+    }
+    return features;
+}
+
+void StyleScope::record_pending_has_invalidation_mutation_features(GC::Ref<DOM::Node> scheduled_node, GC::Ref<DOM::Node> mutation_root, bool includes_descendants)
+{
+    auto features = collect_pending_has_invalidation_mutation_features(*mutation_root, includes_descendants);
+    auto previous_size = m_pending_has_invalidations.size();
+    auto& existing_features = m_pending_has_invalidations.ensure(scheduled_node);
+    if (m_pending_has_invalidations.size() == previous_size) {
+        merge_pending_has_invalidation_mutation_features(existing_features, features);
         return;
     }
+    existing_features = move(features);
+    document().set_needs_invalidation_of_elements_affected_by_has();
+}
 
-    ScopeGuard clear_pending_nodes_guard = [&] {
-        m_pending_nodes_for_style_invalidation_due_to_presence_of_has.clear();
-    };
-
-    // It's ok to call have_has_selectors() instead of may_have_has_selectors() here and force
-    // rule cache build, because it's going to be built soon anyway, since we could get here
-    // only from update_style().
-    if (!have_has_selectors()) {
+void StyleScope::record_pending_has_invalidation_mutation_features(GC::Ref<DOM::Node> scheduled_node, Vector<CSS::InvalidationSet::Property> const& properties)
+{
+    auto features = collect_pending_has_invalidation_mutation_features(properties);
+    auto previous_size = m_pending_has_invalidations.size();
+    auto& existing_features = m_pending_has_invalidations.ensure(scheduled_node);
+    if (m_pending_has_invalidations.size() == previous_size) {
+        merge_pending_has_invalidation_mutation_features(existing_features, features);
         return;
     }
-
-    auto& counters = document().style_invalidation_counters();
-    ++counters.has_ancestor_walk_invocations;
-
-    auto is_in_has_scope = [](DOM::Element const& element) {
-        return element.in_has_scope()
-            || element.affected_by_has_pseudo_class_in_subject_position()
-            || element.affected_by_has_pseudo_class_in_non_subject_position();
-    };
-
-    auto is_in_subtree_of_has_relative_selector_with_sibling_combinator = [](DOM::Element const& element) {
-        return element.in_subtree_of_has_pseudo_class_relative_selector_with_sibling_combinator()
-            || element.affected_by_has_pseudo_class_with_relative_selector_that_has_sibling_combinator();
-    };
-
-    HashTable<DOM::Element*> elements_already_invalidated_for_has;
-    auto nodes = move(m_pending_nodes_for_style_invalidation_due_to_presence_of_has);
-    bool should_scan_ancestor_siblings = have_has_selectors_with_relative_selector_that_has_sibling_combinator();
-    for (auto& node : nodes) {
-        Vector<DOM::Element*, 16> has_scope_ancestors;
-        bool should_delay_ancestor_sibling_scans = false;
-        for (auto* ancestor = &node; ancestor; ancestor = ancestor->parent_or_shadow_host()) {
-            if (!ancestor->is_element())
-                continue;
-            auto& element = static_cast<DOM::Element&>(*ancestor);
-
-            // Terminate the upward walk once we reach an element that no :has()
-            // anchor has ever observed. Its style cannot be affected by a mutation
-            // further down the tree, so neither can anything above it.
-            if (!is_in_has_scope(element))
-                break;
-
-            has_scope_ancestors.append(&element);
-            should_delay_ancestor_sibling_scans |= is_in_subtree_of_has_relative_selector_with_sibling_combinator(element);
-        }
-
-        for (auto* element : has_scope_ancestors) {
-            VERIFY(element);
-
-            if (elements_already_invalidated_for_has.set(element) != AK::HashSetResult::InsertedNewEntry)
-                continue;
-
-            ++counters.has_ancestor_walk_visits;
-            element->invalidate_style_if_affected_by_has();
-
-            auto* parent = element->parent_or_shadow_host();
-            if (!parent)
-                return;
-
-            // If any ancestor's sibling was tested against selectors like ".a:has(+ .b)" or ".a:has(~ .b)"
-            // its style might be affected by the change in descendant node.
-            if (!should_scan_ancestor_siblings)
-                continue;
-            if (should_delay_ancestor_sibling_scans && !is_in_subtree_of_has_relative_selector_with_sibling_combinator(*element))
-                continue;
-            parent->for_each_child_of_type<DOM::Element>([&](auto& ancestor_sibling_element) {
-                ++counters.has_ancestor_sibling_element_checks;
-                if (ancestor_sibling_element.affected_by_has_pseudo_class_with_relative_selector_that_has_sibling_combinator()) {
-                    if (elements_already_invalidated_for_has.set(&ancestor_sibling_element) != AK::HashSetResult::InsertedNewEntry)
-                        return IterationDecision::Continue;
-
-                    ++counters.has_ancestor_walk_visits;
-                    ancestor_sibling_element.invalidate_style_if_affected_by_has();
-                }
-                return IterationDecision::Continue;
-            });
-        }
-    }
+    existing_features = move(features);
+    document().set_needs_invalidation_of_elements_affected_by_has();
 }
 
 RefPtr<CSS::CounterStyle const> StyleScope::get_registered_counter_style(FlyString const& name) const

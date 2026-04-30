@@ -8,17 +8,26 @@
 
 #include <AK/Debug.h>
 #include <AK/LexicalPath.h>
+#include <AK/Utf16FlyString.h>
 #include <LibCore/Promise.h>
+#include <LibCore/Resource.h>
 #include <LibGfx/ImageFormats/ImageDecoder.h>
+#include <LibJS/Runtime/NativeFunction.h>
 #include <LibTextCodec/Decoder.h>
+#include <LibURL/URL.h>
+#include <LibWeb/DOM/CustomEvent.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/DocumentLoading.h>
+#include <LibWeb/DOM/IDLEventListener.h>
 #include <LibWeb/Fetch/Infrastructure/HTTP/MIME.h>
+#include <LibWeb/Fetch/Response.h>
 #include <LibWeb/HTML/HTMLHeadElement.h>
 #include <LibWeb/HTML/Navigable.h>
 #include <LibWeb/HTML/NavigationParams.h>
 #include <LibWeb/HTML/Parser/HTMLEncodingDetection.h>
 #include <LibWeb/HTML/Parser/HTMLParser.h>
+#include <LibWeb/HTML/Parser/IncrementalDocumentParser.h>
+#include <LibWeb/HTML/Window.h>
 #include <LibWeb/Loader/GeneratedPagesLoader.h>
 #include <LibWeb/MimeSniff/Resource.h>
 #include <LibWeb/Namespace.h>
@@ -115,26 +124,9 @@ static WebIDL::ExceptionOr<GC::Ref<DOM::Document>> load_html_document(HTML::Navi
     //    document's relevant global object to have the parser to process the implied EOF character, which eventually
     //    causes a load event to be fired.
     else {
-        // FIXME: Parse as we receive the document data, instead of waiting for the whole document to be fetched first.
-        auto process_body = GC::create_function(document->heap(), [document, url = navigation_params.response->url().value(), mime_type = Fetch::Infrastructure::extract_mime_type(navigation_params.response->header_list())](ByteBuffer data) mutable {
-            Platform::EventLoopPlugin::the().deferred_invoke(GC::create_function(document->heap(), [document = document, data = move(data), url = url, mime_type = move(mime_type)] {
-                auto parser = HTML::HTMLParser::create_with_uncertain_encoding(document, data, mime_type);
-                if (document->ready_to_run_scripts()) {
-                    parser->run(url);
-                } else {
-                    document->set_deferred_parser_start(GC::create_function(document->heap(), [parser, url] {
-                        parser->run(url);
-                    }));
-                }
-            }));
-        });
-
-        auto process_body_error = GC::create_function(document->heap(), [](JS::Value) {
-            dbgln("FIXME: Load html page with an error if read of body failed.");
-        });
-
-        auto& realm = document->realm();
-        navigation_params.response->body()->fully_read(realm, process_body, process_body_error, GC::Ref { realm.global_object() });
+        auto body = GC::Ref { *navigation_params.response->body() };
+        auto parser = HTML::IncrementalDocumentParser::create(document, body, navigation_params.response->url().value(), Fetch::Infrastructure::extract_mime_type(navigation_params.response->header_list()));
+        parser->start();
     }
 
     // 4. Return document.
@@ -270,7 +262,7 @@ static WebIDL::ExceptionOr<GC::Ref<DOM::Document>> load_text_document(HTML::Navi
         dbgln_if(HTML_PARSER_DEBUG, "The encoding sniffing algorithm returned encoding '{}'", encoding);
 
         auto run_text_parser = [document, data = move(data), url, encoding = move(encoding)] {
-            auto parser = HTML::HTMLParser::create_for_scripting(document);
+            auto parser = HTML::HTMLParser::create_with_open_input_stream(document);
             parser->tokenizer().update_insertion_point();
 
             parser->tokenizer().insert_input_at_insertion_point("<pre>\n"sv);
@@ -415,6 +407,45 @@ static WebIDL::ExceptionOr<GC::Ref<DOM::Document>> load_media_document(HTML::Nav
     // be true for the Document.
 }
 
+// Renders the PDF using the bundled pdf.js viewer at an internal resource:// URL.
+static GC::Ref<DOM::Document> load_pdf_document(HTML::NavigationParams const& navigation_params)
+{
+    VERIFY(navigation_params.response->url().has_value());
+    auto pdf_url = navigation_params.response->url().value();
+
+    static auto const s_viewer_bytes = MUST(Core::Resource::load_from_uri("resource://ladybird/pdfjs/web/viewer.html"sv))->clone_data();
+
+    auto document = MUST(DOM::Document::create_and_initialize(DOM::Document::Type::HTML, "text/html"_string, navigation_params));
+    document->set_origin(URL::Origin("resource"_string, String {}, {}));
+
+    auto& realm = document->realm();
+    auto js_response = Fetch::Response::create(realm, GC::Ref(*navigation_params.response), Fetch::Headers::Guard::Response);
+
+    auto listener_fn = JS::NativeFunction::create(
+        realm, [document, js_response](JS::VM&) mutable -> JS::ThrowCompletionOr<JS::Value> {
+            DOM::CustomEventInit init;
+            init.detail = JS::Value(js_response.ptr());
+            document->dispatch_event(*DOM::CustomEvent::create(document->realm(), "ladybirdpdf"_fly_string, init));
+            return JS::js_undefined();
+        },
+        0, Utf16FlyString {}, &realm);
+    auto callback = realm.heap().allocate<WebIDL::CallbackType>(*listener_fn, realm);
+    document->add_event_listener_without_options("ladybirdviewerready"_fly_string, *DOM::IDLEventListener::create(realm, *callback));
+
+    Platform::EventLoopPlugin::the().deferred_invoke(GC::create_function(document->heap(), [document, pdf_url] {
+        auto parser = HTML::HTMLParser::create_with_uncertain_encoding(document, s_viewer_bytes);
+        if (document->ready_to_run_scripts()) {
+            parser->run(pdf_url);
+        } else {
+            document->set_deferred_parser_start(GC::create_function(document->heap(), [parser, pdf_url] {
+                parser->run(pdf_url);
+            }));
+        }
+    }));
+
+    return document;
+}
+
 bool can_load_document_with_type(MimeSniff::MimeType const& type)
 {
     if (type.is_html())
@@ -505,9 +536,7 @@ GC::Ptr<DOM::Document> load_document(HTML::NavigationParams const& navigation_pa
     // -> "text/pdf"
     if (type.essence() == "application/pdf"_string
         || type.essence() == "text/pdf"_string) {
-        // FIXME: If the user agent's PDF viewer supported is true, return the result of creating a document for inline
-        //        content that doesn't have a DOM given navigationParams's navigable, navigationParams's id,
-        //        navigationParams's navigation timing type, and navigationParams's user involvement.
+        return load_pdf_document(navigation_params);
     }
 
     // Otherwise, proceed onward.

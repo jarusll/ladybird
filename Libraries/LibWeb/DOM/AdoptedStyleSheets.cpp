@@ -5,7 +5,7 @@
  */
 
 #include <LibWeb/CSS/CSSStyleSheet.h>
-#include <LibWeb/CSS/StyleComputer.h>
+#include <LibWeb/CSS/Invalidation/AdoptedStyleSheetInvalidator.h>
 #include <LibWeb/DOM/AdoptedStyleSheets.h>
 #include <LibWeb/DOM/Document.h>
 
@@ -28,21 +28,12 @@ GC::Ref<WebIDL::ObservableArray> create_adopted_style_sheets_list(Node& document
         if (!style_sheet->constructed() || style_sheet->constructor_document().ptr() != &document_or_shadow_root.document())
             return WebIDL::NotAllowedError::create(document_or_shadow_root.realm(), "Sharing a StyleSheet between documents is not allowed."_utf16);
 
-        style_sheet->add_owning_document_or_shadow_root(document_or_shadow_root);
-
-        style_sheet->load_pending_image_resources(document_or_shadow_root.document());
-
-        auto& style_scope = document_or_shadow_root.is_shadow_root() ? as<DOM::ShadowRoot>(document_or_shadow_root).style_scope() : document_or_shadow_root.document().style_scope();
-        style_scope.invalidate_rule_cache();
-        document_or_shadow_root.invalidate_style(DOM::StyleInvalidationReason::AdoptedStyleSheetsList);
+        CSS::Invalidation::invalidate_style_after_adopting_style_sheet(document_or_shadow_root, *style_sheet);
         return {};
     });
     adopted_style_sheets->set_on_delete_an_indexed_value_callback([&document_or_shadow_root](JS::Value value) -> WebIDL::ExceptionOr<void> {
         auto& style_sheet = value.as<CSS::CSSStyleSheet>();
-        auto& style_scope = document_or_shadow_root.is_shadow_root() ? as<DOM::ShadowRoot>(document_or_shadow_root).style_scope() : document_or_shadow_root.document().style_scope();
-        style_sheet.remove_owning_document_or_shadow_root(document_or_shadow_root);
-        style_scope.invalidate_rule_cache();
-        document_or_shadow_root.invalidate_style(DOM::StyleInvalidationReason::AdoptedStyleSheetsList);
+        CSS::Invalidation::invalidate_style_after_removing_adopted_style_sheet(document_or_shadow_root, style_sheet);
         return {};
     });
 

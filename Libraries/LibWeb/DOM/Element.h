@@ -348,7 +348,16 @@ public:
     static GC::Ptr<Layout::NodeWithStyle> create_layout_node_for_display_type(DOM::Document&, CSS::Display const&, GC::Ref<CSS::ComputedProperties>, Element*);
 
     [[nodiscard]] bool affected_by_pseudo_class(CSS::PseudoClass) const;
-    bool includes_properties_from_invalidation_set(CSS::InvalidationSet const&) const;
+    void clear_removed_attributes_for_style_invalidation() { m_removed_attributes_for_style_invalidation.clear(); }
+    bool has_removed_attribute_for_style_invalidation(FlyString const& attribute_name) const
+    {
+        return m_removed_attributes_for_style_invalidation.contains_slow(attribute_name);
+    }
+    void remember_removed_attribute_for_style_invalidation(FlyString const& attribute_name)
+    {
+        if (!m_removed_attributes_for_style_invalidation.contains_slow(attribute_name))
+            m_removed_attributes_for_style_invalidation.append(attribute_name);
+    }
 
     void set_pseudo_element_node(Badge<Layout::TreeBuilder>, CSS::PseudoElement, GC::Ptr<Layout::NodeWithStyle>);
     GC::Ptr<Layout::NodeWithStyle> get_pseudo_element_node(CSS::PseudoElement) const;
@@ -499,8 +508,6 @@ public:
     bool matches_link_pseudo_class() const;
     bool matches_local_link_pseudo_class() const;
 
-    void invalidate_style_if_affected_by_has();
-
     bool affected_by_has_pseudo_class_in_subject_position() const { return m_affected_by_has_pseudo_class_in_subject_position; }
     void set_affected_by_has_pseudo_class_in_subject_position(bool value) { m_affected_by_has_pseudo_class_in_subject_position = value; }
 
@@ -540,6 +547,16 @@ public:
 
     bool affected_by_backward_positional_pseudo_class() const { return m_affected_by_backward_positional_pseudo_class; }
     void set_affected_by_backward_positional_pseudo_class(bool value);
+
+    // Write-once: this can be set while matching descendants, and recomputing this element's own style may not revisit
+    // those descendant selectors. Keeping it sticky is conservative and avoids stale descendant style after moves.
+    bool affected_by_structural_pseudo_class_in_non_subject_position() const { return m_affected_by_structural_pseudo_class_in_non_subject_position; }
+    void set_affected_by_structural_pseudo_class_in_non_subject_position() { m_affected_by_structural_pseudo_class_in_non_subject_position = true; }
+
+    // Write-once: this can be set while matching descendants, and recomputing this element's own style may not revisit
+    // those descendant selectors. Keeping it sticky is conservative and avoids stale descendant style after moves.
+    bool affected_by_sibling_combinator_in_non_subject_position() const { return m_affected_by_sibling_combinator_in_non_subject_position; }
+    void set_affected_by_sibling_combinator_in_non_subject_position() { m_affected_by_sibling_combinator_in_non_subject_position = true; }
 
     size_t sibling_invalidation_distance() const { return m_sibling_invalidation_distance; }
     void set_sibling_invalidation_distance(size_t value) { m_sibling_invalidation_distance = value; }
@@ -626,8 +643,6 @@ protected:
 private:
     FlyString make_html_uppercased_qualified_name() const;
 
-    void invalidate_style_after_attribute_change(FlyString const& attribute_name, Optional<String> const& old_value, Optional<String> const& new_value);
-
     void exit_fullscreen_on_element_removal();
 
     WebIDL::ExceptionOr<GC::Ptr<Node>> insert_adjacent(StringView where, GC::Ref<Node> node);
@@ -701,6 +716,7 @@ private:
     GC::Ptr<CSS::StylePropertyMapReadOnly> m_computed_style_map_cache;
 
     CSSPixelPoint m_scroll_offset;
+    Vector<FlyString, 1> m_removed_attributes_for_style_invalidation;
 
     bool m_is_being_activated : 1 { false };
     bool m_in_top_layer : 1 { false };
@@ -719,6 +735,8 @@ private:
     bool m_affected_by_last_child_pseudo_class : 1 { false };
     bool m_affected_by_forward_positional_pseudo_class : 1 { false };
     bool m_affected_by_backward_positional_pseudo_class : 1 { false };
+    bool m_affected_by_structural_pseudo_class_in_non_subject_position : 1 { false };
+    bool m_affected_by_sibling_combinator_in_non_subject_position : 1 { false };
     bool m_affected_by_has_pseudo_class_with_relative_selector_that_has_sibling_combinator : 1 { false };
     bool m_in_subtree_of_has_pseudo_class_relative_selector_with_sibling_combinator : 1 { false };
     bool m_in_has_scope : 1 { false };
