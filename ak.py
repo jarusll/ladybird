@@ -334,65 +334,126 @@ def ak_variant_summary(valobj, internal_dict):
         return f"{current_type.GetName()}"
     return "AK::Variant<?>"
 
+class AKArraySyntheticProvider:
+    def __init__(self, valobj, internal_dict):
+        self.valobj = valobj.GetNonSyntheticValue()
+        self.update()
+
+    def update(self):
+        valType = self.valobj.GetType()
+        self.elem_type = valType.GetTemplateArgumentType(0)
+        self.size = valType.GetTemplateArgumentValue(self.valobj.GetTarget(), 1).GetValueAsUnsigned()
+
+        if self.size == 0:
+            self.data_ptr = None
+            return
+
+        data = self.valobj.GetChildMemberWithName("__data")
+        self.data_ptr = data.AddressOf().Cast(
+            self.elem_type.GetPointerType()
+        )
+        self.elem_size = self.elem_type.GetByteSize()
+
+    def has_children(self):
+        return self.size > 0
+
+    def num_children(self):
+        return self.size
+
+    def get_child_index(self, name):
+        if name.startswith("[") and name.endswith("]"):
+            try:
+                return int(name[1:-1])
+            except:
+                return -1
+        return -1
+
+    def get_child_at_index(self, index):
+        if index < 0 or index >= self.size or self.data_ptr is None:
+            return None
+
+        return self.data_ptr.CreateChildAtOffset(
+            f"[{index}]",
+            index * self.elem_size,
+            self.elem_type
+        )
+
+class AKIntrusiveListSyntheticProvider:
+    def __init__(self, valobj, internal_dict):
+        self.valobj = valobj
+        self.update()
+
+    def update(self):
+        self.val = self.valobj.GetNonSyntheticValue()
+        t = self.val.GetType()
+        self.element_type = t.GetTemplateArgumentType(0)
+
+        self.node_member_offset = 0
+        for i in range(self.element_type.GetNumberOfFields()):
+            field = self.element_type.GetFieldAtIndex(i)
+            if "IntrusiveListNode" in field.GetType().GetName():
+                self.node_member_offset = field.GetOffsetInBytes()
+                break
+
+        self.first = self.val.GetChildMemberWithName("m_storage") \
+                             .GetChildMemberWithName("m_first")
+
+    def _node_to_value(self, node):
+        addr = node.GetValueAsUnsigned() - self.node_member_offset
+        return self.val.CreateValueFromAddress(
+            None,
+            addr,
+            self.element_type
+        )
+
+    def num_children(self):
+        count = 0
+        current = self.first
+        while current.GetValueAsUnsigned() != 0:
+            count += 1
+            current = current.GetChildMemberWithName("m_next")
+        return count
+
+    def get_child_at_index(self, index):
+        current = self.first
+        i = 0
+        while current.GetValueAsUnsigned() != 0:
+            if i == index:
+                val = self._node_to_value(current)
+                return val.Clone(f"[{i}]")
+            current = current.GetChildMemberWithName("m_next")
+            i += 1
+        return None
 
 def __lldb_init_module(debugger, internal_dict):
-    debugger.HandleCommand(
-        "command script add -f ak.connect pyconnect --overwrite"
-    )
-    debugger.HandleCommand(
-        "type summary add -x \"^AK::ByteString(<.*>)?$\" -F ak.ak_bytestring_summary"
-    )
-    debugger.HandleCommand(
-        "type summary add -x \"^AK::ByteStringImpl(<.*>)?$\" -F ak.ak_string_impl_summary"
-    )
-    debugger.HandleCommand(
-        "type summary add -x \"^AK::StringView(<.*>)?$\" -F ak.ak_stringview_summary"
-    )
-    debugger.HandleCommand(
-        "type summary add -x \"^AK::String(<.*>)?$\" -F ak.ak_string_summary"
-    )
-    debugger.HandleCommand(
-        "type summary add -x \"^AK::Atomic(<.*>)?$\" -F ak.ak_atomic_summary"
-    )
-    debugger.HandleCommand(
-        "type summary add -x \"^AK::RefCounted(<.*>)?$\" -F ak.ak_refcounted_summary"
-    )
-    debugger.HandleCommand(
-        "type summary add -x \"^AK::FixedArray(<.*>)?$\" -F ak.ak_fixedarray_summary"
-    )
-    debugger.HandleCommand(
-        "type synthetic add -x \"^AK::FixedArray(<.*>)?$\" -l ak.AKFixedArraySynthProvider"
-    )
-    debugger.HandleCommand(
-        "type summary add -x \"^AK::HashMap(<.*>)?$\" -F ak.ak_hashmap_summary"
-    )
-    debugger.HandleCommand(
-        "type synthetic add -x \"^AK::HashMap(<.*>)?$\" -l ak.AKHashMapSynthProvider"
-    )
-    debugger.HandleCommand(
-        "type summary add -x \"^AK::RefPtr(<.*>)?$\" -F ak.ak_refptr_summary"
-    )
-    debugger.HandleCommand(
-        "type summary add -x \"^AK::OwnPtr(<.*>)?$\" -F ak.ak_ownptr_summary"
-    )
-    debugger.HandleCommand(
-        "type summary add -x \"^AK::NonnullRefPtr(<.*>)?$\" -F ak.ak_nonnullrefptr_summary"
-    )
-    debugger.HandleCommand(
-        "type summary add -x \"^AK::SinglyLinkedList(<.*>)?$\" -F ak.ak_singlylinkedlist_summary"
-    )
-    debugger.HandleCommand(
-        "type synthetic add -x \"^AK::SinglyLinkedList(<.*>)?$\" -l ak.AKSinglyLinkedListSynthProvider"
-    )
-    debugger.HandleCommand(
-        "type summary add -x \"^AK::Vector(<.*>)?$\" -F ak.ak_vector_summary"
-    )
-    debugger.HandleCommand(
-        "type synthetic add -x \"^AK::Vector(<.*>)?$\" -l ak.AKVectorSynthProvider"
-    )
-    debugger.HandleCommand(
-        "type summary add -x \"^AK::Optional(<.*>)?$\" -F ak.ak_optional_summary"
-    )
-    debugger.HandleCommand(
-        "type summary add -x \"^AK::Variant(<.*>)?$\" -F ak.ak_variant_summary"
-    )
+    commands = [
+        "command script add -f ak.connect pyconnect --overwrite",
+        "type summary add -x \"^AK::ByteString(<.*>)?$\" -F ak.ak_bytestring_summary",
+        "type summary add -x \"^AK::ByteStringImpl(<.*>)?$\" -F ak.ak_string_impl_summary",
+        "type summary add -x \"^AK::StringView(<.*>)?$\" -F ak.ak_stringview_summary",
+        "type summary add -x \"^AK::String(<.*>)?$\" -F ak.ak_string_summary",
+        "type summary add -x \"^AK::Atomic(<.*>)?$\" -F ak.ak_atomic_summary",
+        "type summary add -x \"^AK::RefCounted(<.*>)?$\" -F ak.ak_refcounted_summary",
+        "type summary add -x \"^AK::FixedArray(<.*>)?$\" -F ak.ak_fixedarray_summary",
+        "type synthetic add -x \"^AK::FixedArray(<.*>)?$\" -l ak.AKFixedArraySynthProvider",
+        "type summary add -x \"^AK::HashMap(<.*>)?$\" -F ak.ak_hashmap_summary",
+        "type synthetic add -x \"^AK::HashMap(<.*>)?$\" -l ak.AKHashMapSynthProvider",
+        "type summary add -x \"^AK::RefPtr(<.*>)?$\" -F ak.ak_refptr_summary",
+        "type summary add -x \"^AK::OwnPtr(<.*>)?$\" -F ak.ak_ownptr_summary",
+        "type summary add -x \"^AK::NonnullRefPtr(<.*>)?$\" -F ak.ak_nonnullrefptr_summary",
+        "type summary add -x \"^AK::SinglyLinkedList(<.*>)?$\" -F ak.ak_singlylinkedlist_summary",
+        "type synthetic add -x \"^AK::SinglyLinkedList(<.*>)?$\" -l ak.AKSinglyLinkedListSynthProvider",
+        "type summary add -x \"^AK::Vector(<.*>)?$\" -F ak.ak_vector_summary",
+        "type synthetic add -x \"^AK::Vector(<.*>)?$\" -l ak.AKVectorSynthProvider",
+        "type summary add -x \"^AK::Optional(<.*>)?$\" -F ak.ak_optional_summary",
+        "type summary add -x \"^AK::Variant(<.*>)?$\" -F ak.ak_variant_summary",
+        "type synthetic add -x \"^AK::Array(<.*>)?$\" -l ak.AKArraySyntheticProvider",
+        "type synthetic add -x \"^AK::IntrusiveList(<.*>)?$\" -l ak.AKIntrusiveListSyntheticProvider",
+    ]
+
+    for cmd in commands:
+        try:
+            debugger.HandleCommand(cmd)
+        except Exception as e:
+            print(f"ak.py: Failed to run command: {cmd}")
+            print(f"  Error: {e}")
