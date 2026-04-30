@@ -306,6 +306,23 @@ class AKVectorSynthProvider:
         )
 
 
+
+def ak_optional_summary(valobj, internal_dict):
+    valobj = valobj.GetNonSyntheticValue()
+    stream = lldb.SBStream()
+    if not valobj.GetExpressionPath(stream):
+        return None
+
+    frame = valobj.GetFrame()
+    if not frame.IsValid():
+        return None
+
+    has_value = frame.EvaluateExpression(
+        f"{stream.GetData()}.has_value()"
+    )
+    return "Some" if has_value.GetValueAsUnsigned() != 0 else "None"
+
+
 def __lldb_init_module(debugger, internal_dict):
     debugger.HandleCommand(
         "command script add -f ak.connect pyconnect --overwrite"
@@ -360,4 +377,7 @@ def __lldb_init_module(debugger, internal_dict):
     )
     debugger.HandleCommand(
         "type synthetic add -x \"^AK::Vector(<.*>)?$\" -l ak.AKVectorSynthProvider"
+    )
+    debugger.HandleCommand(
+        "type summary add -x \"^AK::Optional(<.*>)?$\" -F ak.ak_optional_summary"
     )
