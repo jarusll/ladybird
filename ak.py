@@ -364,6 +364,83 @@ class AKIntrusiveListSyntheticProvider:
             i += 1
         return None
 
+class AKSinglyLinkedListSyntheticProvider:
+    def __init__(self, valobj, internal_dict):
+        self.valobj = valobj
+        self.update()
+
+    def update(self):
+        self.val = self.valobj.GetNonSyntheticValue()
+        self.head = self.val.GetChildMemberWithName("m_head")
+
+    def has_children(self):
+        return self.head.GetValueAsUnsigned() != 0
+
+    def num_children(self):
+        count = 0
+        node = self.head
+        while node.GetValueAsUnsigned() != 0:
+            count += 1
+            node = node.GetChildMemberWithName("next")
+        return count
+
+    def get_child_at_index(self, index):
+        node = self.head
+        i = 0
+        while node.GetValueAsUnsigned() != 0:
+            if i == index:
+                val = node.GetChildMemberWithName("value")
+                return val.Clone(f"[{i}]")
+            node = node.GetChildMemberWithName("next")
+            i += 1
+        return None
+
+    def get_child_index(self, name):
+        if name.startswith("[") and name.endswith("]"):
+            try:
+                return int(name[1:-1])
+            except:
+                return -1
+        return -1
+
+class AKVariantSyntheticProvider:
+    def __init__(self, valobj, internal_dict):
+        self.valobj = valobj
+        self.update()
+
+    def update(self):
+        self.val = self.valobj.GetNonSyntheticValue()
+        self.index = self.val.GetChildMemberWithName("m_index").GetValueAsUnsigned()
+        self.data = self.val.GetChildMemberWithName("m_data")
+        self.type = self.val.GetType()
+        self.num_types = self.type.GetNumberOfTemplateArguments()
+
+        self.active_type = None
+        if self.index < self.num_types:
+            self.active_type = self.type.GetTemplateArgumentType(self.index)
+
+    def has_children(self):
+        return self.active_type is not None
+
+    def num_children(self):
+        return 1 if self.active_type else 0
+
+    def get_child_at_index(self, index):
+        if index != 0 or not self.active_type:
+            return None
+
+        data_addr = self.data.GetAddress().GetLoadAddress(self.val.GetTarget())
+
+        value = self.val.CreateValueFromAddress(
+            "value",
+            data_addr,
+            self.active_type
+        )
+
+        return value.Clone("value")
+
+    def get_child_index(self, name):
+        return 0 if name == "value" else -1
 
 class AKVectorSynthProvider:
     def __init__(self, valobj, internal_dict):
@@ -440,7 +517,9 @@ def __lldb_init_module(debugger, internal_dict):
         "type summary add -x \"^AK::StringView(<.*>)?$\" -F ak.ak_stringview_summary",
         "type summary add -x \"^AK::Variant(<.*>)?$\" -F ak.ak_variant_summary",
         "type summary add -x \"^AK::Vector(<.*>)?$\" -F ak.ak_vector_summary",
+        "type synthetic add -x \"^AK::Variant(<.*>)?$\" -l ak.AKVariantSyntheticProvider",
         "type synthetic add -x \"^AK::Vector(<.*>)?$\" -l ak.AKVectorSynthProvider",
+        "type synthetic add -x \"^AK::SinglyLinkedList(<.*>)?$\" -l ak.AKSinglyLinkedListSyntheticProvider",
     ]
 
     for cmd in commands:
