@@ -1,0 +1,14 @@
+script
+import os, lldb
+
+akPath = os.path.abspath("./Meta/lldb/PrettyPrinters/ak.py")
+print("loading:", akPath)
+
+err = lldb.SBError()
+lldb.debugger.GetCommandInterpreter().HandleCommand(
+    f"command script import {akPath}",
+    lldb.SBCommandReturnObject()
+)
+
+print("done")
+end
