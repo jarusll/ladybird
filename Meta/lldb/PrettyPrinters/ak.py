@@ -505,7 +505,6 @@ def __lldb_init_module(debugger, internal_dict):
         'type summary add -x "^AK::RefCounted(<.*>)?$" -F ak.ak_refcounted_summary',
         'type summary add -x "^AK::RefPtr(<.*>)?$" -F ak.ak_refptr_summary',
         'type summary add -x "^AK::SinglyLinkedList(<.*>)?$" -F ak.ak_singlylinkedlist_summary',
-        'type synthetic add -x "^AK::SinglyLinkedList(<.*>)?$" -l ak.AKSinglyLinkedListSynthProvider',
         'type summary add -x "^AK::String(<.*>)?$" -F ak.ak_string_summary',
         'type summary add -x "^AK::StringView(<.*>)?$" -F ak.ak_stringview_summary',
         'type summary add -x "^AK::Variant(<.*>)?$" -F ak.ak_variant_summary',
